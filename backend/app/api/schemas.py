@@ -73,12 +73,14 @@ class PredictionMetrics(BaseModel):
 class AnalysisRequest(BaseModel):
     """Request body for analysis endpoint."""
     prompt: str = Field(..., description="User's marketing goal/prompt")
+    session_id: Optional[str] = Field(default=None, description="Session ID for multi-turn conversation")
     stream: Optional[bool] = Field(default=False, description="Whether to stream thinking steps")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "prompt": "我要为春季新款手袋上市做一次推广，目标是提升转化率，请帮我圈选高潜人群。",
+                "session_id": None,
                 "stream": False
             }
         }
@@ -86,6 +88,7 @@ class AnalysisRequest(BaseModel):
 
 class AnalysisResponse(BaseModel):
     """Response body for analysis endpoint."""
+    session_id: str = Field(..., description="Session ID for this conversation")
     audience: list[User] = Field(..., description="Selected audience")
     metrics: PredictionMetrics = Field(..., description="Predicted metrics")
     response: str = Field(..., description="Agent's natural language response")
@@ -95,6 +98,7 @@ class AnalysisResponse(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "session_id": "abc123-def456-ghi789",
                 "audience": [
                     {
                         "id": "1",
@@ -163,3 +167,59 @@ class MetricsEventData(BaseModel):
     title: str = Field(..., description="Step title")
     description: str = Field(..., description="Step description")
     status: str = Field(..., description="Step status")
+
+
+class SessionResponse(BaseModel):
+    """Response for session operations."""
+    session_id: str = Field(..., description="Session ID")
+    message: str = Field(..., description="Status message")
+    created_at: Optional[str] = Field(default=None, description="Session creation timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "abc123-def456-ghi789",
+                "message": "Session cleared. New session started.",
+                "created_at": "2024-01-15T10:00:00"
+            }
+        }
+
+
+class CampaignApplicationRequest(BaseModel):
+    """Request body for campaign application endpoint."""
+    session_id: str = Field(..., description="Session ID to apply")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "abc123-def456-ghi789"
+            }
+        }
+
+
+class CampaignApplicationResponse(BaseModel):
+    """Response body for campaign application endpoint."""
+    status: str = Field(..., description="Application status")
+    message: str = Field(..., description="Result message")
+    campaign_summary: dict = Field(..., description="Summary of the applied campaign")
+    mock_payload: dict = Field(..., description="Mock payload sent to marketing engine")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Application timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "Campaign successfully applied to marketing engine",
+                "campaign_summary": {
+                    "target_audience_size": 100,
+                    "estimated_revenue": 144000,
+                    "target_tiers": ["VVIP", "VIP"]
+                },
+                "mock_payload": {
+                    "campaign_id": "camp_123456",
+                    "audience_ids": ["1", "2", "3"],
+                    "kpi_target": "conversion_rate"
+                },
+                "timestamp": "2024-01-15T10:00:00"
+            }
+        }

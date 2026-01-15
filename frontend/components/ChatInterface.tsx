@@ -235,6 +235,23 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
 
       {/* Input Area */}
       <div className="p-5 border-t border-gray-100 space-y-3">
+        <div className="flex justify-between">
+          <Button
+            size="small"
+            onClick={() => setInputValue('')}
+            disabled={isProcessing}
+          >
+            清空
+          </Button>
+          <Button
+            size="small"
+            onClick={() => setInputValue(INITIAL_PROMPT)}
+            disabled={isProcessing}
+          >
+            应用
+          </Button>
+        </div>
+
         <TextArea
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}

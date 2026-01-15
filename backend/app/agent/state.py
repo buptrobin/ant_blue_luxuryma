@@ -15,6 +15,11 @@ class AgentState(TypedDict, total=False):
     # Input
     user_input: str
 
+    # Multi-turn conversation support
+    conversation_context: str  # Formatted context from previous turns
+    is_modification: bool  # Whether this is modifying existing intent
+    previous_intent: dict[str, Any] | None  # Intent from previous turn
+
     # Processing stages
     intent: dict[str, Any]  # Parsed user intent
     features: dict[str, Any]  # Extracted features/rules

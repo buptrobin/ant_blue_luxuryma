@@ -20,6 +20,11 @@ async def intent_analysis_node(state: AgentState) -> dict[str, Any]:
     - Target audience tiers
     - Behavioral criteria
     - Constraints and preferences
+
+    Supports multi-turn conversations:
+    - Uses conversation_context to understand history
+    - Detects if user is modifying existing intent
+    - Adjusts intent based on previous state
     """
     logger.info("Executing intent_analysis_node")
 
@@ -37,22 +42,117 @@ async def intent_analysis_node(state: AgentState) -> dict[str, Any]:
     # Get LLM manager and analyze intent
     llm = get_llm_manager()
     user_input = state["user_input"]
+    conversation_context = state.get("conversation_context", "")
+    is_modification = state.get("is_modification", False)
+    previous_intent = state.get("previous_intent")
 
     try:
-        intent = await llm.analyze_intent(user_input)
-        logger.info(f"Extracted intent: {intent}")
+        # Use context-aware prompt for multi-turn
+        if conversation_context and is_modification and previous_intent:
+            # User is modifying existing intent
+            prompt_context = f"""你是一个营销专家。用户正在修改现有的营销策略。
+
+{conversation_context}
+
+请分析用户的新输入，并基于当前策略进行**增量调整**。返回调整后的完整策略。
+
+用户的新输入：{user_input}
+
+请返回一个JSON格式的结果，包含以下字段：
+- kpi: 核心KPI目标 (conversion_rate/revenue/visit_rate)
+- target_tiers: 目标会员等级 (VVIP/VIP/Member)
+- behavior_filters: 行为筛选条件
+  - browse_frequency: 浏览频次阈值 (0-100)
+  - engagement_level: 参与度级别 (high/medium/low)
+- size_preference: 人群规模偏好
+  - min: 最小规模
+  - max: 最大规模
+- constraints: 额外约束条件列表
+
+只返回JSON，不要其他内容。"""
+
+            intent = await llm.analyze_intent(prompt_context)
+            logger.info(f"Modified intent based on context: {intent}")
+
+        else:
+            # Fresh analysis
+            intent = await llm.analyze_intent(user_input)
+            logger.info(f"Extracted fresh intent: {intent}")
+
     except Exception as e:
         logger.error(f"Error analyzing intent: {e}")
-        # Fallback to default intent
-        intent = {
-            "kpi": "conversion_rate",
-            "target_tiers": ["VVIP", "VIP"],
-            "behavior_filters": {},
-            "size_preference": {"min": 50, "max": 500},
-            "constraints": []
-        }
+        # Fallback to default or previous intent
+        if previous_intent:
+            intent = previous_intent
+        else:
+            intent = {
+                "kpi": "conversion_rate",
+                "target_tiers": ["VVIP", "VIP"],
+                "behavior_filters": {},
+                "size_preference": {"min": 50, "max": 500},
+                "constraints": []
+            }
 
-    # Mark step as completed
+    # Mark step as completed with detailed description
+    kpi = intent.get('kpi', 'N/A')
+    target_tiers = intent.get('target_tiers', [])
+    behavior_filters = intent.get('behavior_filters', {})
+    size_pref = intent.get('size_preference', {})
+    constraints = intent.get('constraints', [])
+
+    # Build detailed natural language description
+    description_parts = []
+
+    # KPI目标
+    kpi_map = {
+        'conversion_rate': '转化率（CVR）',
+        'revenue': '营收增长',
+        'visit_rate': '到店率',
+        'engagement': '互动参与度'
+    }
+    description_parts.append(f"**核心KPI目标**: {kpi_map.get(kpi, kpi)}")
+
+    # 目标人群等级
+    if target_tiers:
+        # Filter out None values
+        target_tiers_filtered = [t for t in target_tiers if t is not None]
+        if target_tiers_filtered:
+            tier_desc = "、".join(target_tiers_filtered)
+            description_parts.append(f"**目标客户等级**: {tier_desc}")
+
+    # 行为筛选条件
+    if behavior_filters:
+        behavior_desc = []
+        if 'browse_frequency' in behavior_filters:
+            behavior_desc.append(f"浏览频次≥{behavior_filters['browse_frequency']}")
+        if 'engagement_level' in behavior_filters:
+            level_map = {'high': '高', 'medium': '中', 'low': '低'}
+            level_val = behavior_filters['engagement_level']
+            behavior_desc.append(f"参与度{level_map.get(level_val, str(level_val) if level_val else '未知')}")
+        # Filter out None values before joining
+        behavior_desc = [b for b in behavior_desc if b is not None]
+        if behavior_desc:
+            description_parts.append(f"**行为要求**: {', '.join(behavior_desc)}")
+
+    # 人群规模偏好
+    if size_pref:
+        min_size = size_pref.get('min', 0)
+        max_size = size_pref.get('max', 0)
+        if min_size or max_size:
+            description_parts.append(f"**人群规模**: {min_size}-{max_size}人")
+
+    # 额外约束
+    if constraints:
+        # Filter out None values
+        constraints_filtered = [c for c in constraints if c is not None]
+        if constraints_filtered:
+            description_parts.append(f"**约束条件**: {', '.join(constraints_filtered)}")
+
+    # 是否是修改意图
+    if is_modification:
+        description_parts.insert(0, "🔄 **检测到意图修改** - 基于上一轮结果进行增量调整")
+
+    thinking_steps[0]["description"] = "\n".join(description_parts)
     thinking_steps[0]["status"] = "completed"
 
     return {
@@ -96,7 +196,59 @@ async def feature_extraction_node(state: AgentState) -> dict[str, Any]:
             "explanation": "基于会员等级和行为特征的多维筛选"
         }
 
+    # Build detailed natural language description
+    description_parts = []
+
+    # 特征维度说明
+    target_tiers = intent.get('target_tiers', [])
+    if target_tiers:
+        # Filter out None values
+        target_tiers_filtered = [t for t in target_tiers if t is not None]
+        if target_tiers_filtered:
+            description_parts.append(f"**会员等级筛选**: 定位{', '.join(target_tiers_filtered)}客户群体")
+
+    # 行为特征
+    behavior_filters = intent.get('behavior_filters', {})
+    if behavior_filters:
+        behavior_features = []
+        if 'browse_frequency' in behavior_filters:
+            behavior_features.append(f"高频浏览用户（阈值{behavior_filters['browse_frequency']}）")
+        if 'engagement_level' in behavior_filters:
+            level = behavior_filters['engagement_level']
+            level_desc = {'high': '高度活跃', 'medium': '中度活跃', 'low': '低活跃度'}
+            desc = level_desc.get(level, str(level) if level else '未知活跃度')
+            behavior_features.append(desc)
+        # Filter out None values before joining
+        behavior_features = [f for f in behavior_features if f is not None]
+        if behavior_features:
+            description_parts.append(f"**行为特征**: {', '.join(behavior_features)}")
+
+    # 消费力分析
+    kpi = intent.get('kpi', '')
+    if kpi == 'revenue':
+        description_parts.append("**消费力**: 优先圈选高客单价、复购率高的用户")
+    elif kpi == 'conversion_rate':
+        description_parts.append("**转化倾向**: 优先圈选高意向、浏览深度高的用户")
+    elif kpi == 'visit_rate':
+        description_parts.append("**到店意愿**: 优先圈选近期活跃、地理位置匹配的用户")
+
+    # 特征权重说明
+    weights = features.get('weights', {})
+    if weights:
+        weight_items = []
+        for key, val in weights.items():
+            if key is not None and val is not None:
+                weight_items.append(f"{key}({val})")
+        if weight_items:
+            description_parts.append(f"**特征权重**: {', '.join(weight_items)}")
+
+    # LLM生成的说明
+    explanation = features.get('explanation', '')
+    if explanation:
+        description_parts.append(f"**策略说明**: {explanation}")
+
     # Mark step as completed
+    thinking_steps[-1]["description"] = "\n".join(description_parts) if description_parts else "已完成多维特征提取"
     thinking_steps[-1]["status"] = "completed"
 
     return {
@@ -137,7 +289,67 @@ async def audience_selection_node(state: AgentState) -> dict[str, Any]:
         selected_users = []
         metadata = {}
 
+    # Build detailed natural language description
+    description_parts = []
+
+    # 圈选结果概览
+    total_selected = len(selected_users)
+    description_parts.append(f"✅ **圈选完成**: 从全量用户中筛选出 **{total_selected}人** 高潜人群")
+
+    # 会员等级分布
+    tier_distribution = {}
+    for user in selected_users:
+        tier = user.get("tier", "Member")
+        tier_distribution[tier] = tier_distribution.get(tier, 0) + 1
+
+    if tier_distribution:
+        tier_desc = []
+        tier_order = ["VVIP", "VIP", "Member"]
+        for tier in tier_order:
+            if tier in tier_distribution:
+                count = tier_distribution[tier]
+                percentage = (count / total_selected * 100) if total_selected > 0 else 0
+                tier_desc.append(f"{tier} {count}人({percentage:.0f}%)")
+        if tier_desc:
+            description_parts.append(f"**会员分布**: {' | '.join(tier_desc)}")
+
+    # 平均匹配度
+    if selected_users:
+        avg_match_score = sum(u.get("matchScore", 0) for u in selected_users) / len(selected_users)
+        description_parts.append(f"**平均匹配度**: {avg_match_score:.1f}分")
+
+    # Top 3用户预览
+    if selected_users:
+        top_3 = selected_users[:3]
+        top_users_desc = []
+        for i, user in enumerate(top_3, 1):
+            name = user.get("name", "未知")
+            tier = user.get("tier", "Member")
+            score = user.get("score", 0)
+            match_score = user.get("matchScore", 0)
+            top_users_desc.append(f"{i}. {name}({tier}, 基础{score}分, 匹配{match_score:.1f}分)")
+
+        description_parts.append(f"**Top 3用户**:\n" + "\n".join(top_users_desc))
+
+    # 筛选策略说明
+    target_tiers = intent.get('target_tiers', [])
+    if target_tiers:
+        # Filter out None values
+        target_tiers_filtered = [t for t in target_tiers if t is not None]
+        if target_tiers_filtered:
+            description_parts.append(f"**筛选策略**: 定位{'/'.join(target_tiers_filtered)}等级，匹配度加权排序")
+
+    # 数据质量评估
+    if total_selected > 0:
+        if total_selected < 10:
+            description_parts.append("⚠️ **建议**: 当前人群规模较小，可考虑放宽筛选条件扩大覆盖")
+        elif total_selected > 200:
+            description_parts.append("💡 **建议**: 人群规模较大，可进一步提升筛选精准度")
+        else:
+            description_parts.append("✨ **评估**: 人群规模合理，匹配度良好")
+
     # Mark step as completed
+    thinking_steps[-1]["description"] = "\n".join(description_parts) if description_parts else f"已圈选{total_selected}人"
     thinking_steps[-1]["status"] = "completed"
 
     return {
@@ -158,7 +370,16 @@ async def prediction_optimization_node(state: AgentState) -> dict[str, Any]:
     """
     logger.info("Executing prediction_optimization_node")
 
+    thinking_steps = state.get("thinking_steps", [])
     audience = state.get("audience", [])
+
+    # Add fourth thinking step
+    thinking_steps.append({
+        "id": "4",
+        "title": "效果预测与优化",
+        "description": "正在计算转化率、ROI等核心指标...",
+        "status": "active"
+    })
 
     # Calculate metrics
     calculator = get_calculator()
@@ -190,8 +411,85 @@ async def prediction_optimization_node(state: AgentState) -> dict[str, Any]:
             "quality_score": 0
         }
 
+    # Build detailed natural language description
+    description_parts = []
+
+    # 核心指标预测
+    description_parts.append("📊 **核心指标预测**")
+
+    # 转化率
+    conversion_rate = metrics.get("conversion_rate", 0)
+    description_parts.append(f"• **预估转化率**: {conversion_rate:.2%}")
+    if conversion_rate > 0.10:
+        description_parts.append("  ✨ 转化率表现优秀")
+    elif conversion_rate > 0.05:
+        description_parts.append("  ✓ 转化率表现良好")
+    else:
+        description_parts.append("  ⚠️ 转化率偏低，建议优化人群质量")
+
+    # 预估收入
+    estimated_revenue = metrics.get("estimated_revenue", 0)
+    description_parts.append(f"• **预估收入**: ¥{estimated_revenue:,.0f}")
+
+    # ROI
+    roi = metrics.get("roi", 0)
+    description_parts.append(f"• **投资回报率(ROI)**: {roi:.2f}倍")
+    if roi > 5:
+        description_parts.append("  🎯 ROI表现优异，建议立即执行")
+    elif roi > 3:
+        description_parts.append("  ✓ ROI达标，可以执行")
+    else:
+        description_parts.append("  ⚠️ ROI偏低，建议优化策略")
+
+    # 触达率
+    reach_rate = metrics.get("reach_rate", 0)
+    description_parts.append(f"• **触达率**: {reach_rate:.1f}%")
+
+    # 人群质量分
+    quality_score = metrics.get("quality_score", 0)
+    description_parts.append(f"• **人群质量分**: {quality_score:.1f}分")
+
+    # 人群规模分析
+    description_parts.append(f"\n📈 **人群规模分析**")
+    description_parts.append(f"• 目标人群: {audience_size}人")
+
+    # 各等级预估收入
+    if tier_distribution:
+        from app.data.mock_users import TIER_AVG_ORDER_VALUE
+        tier_revenue_parts = []
+        for tier in ["VVIP", "VIP", "Member"]:
+            count = tier_distribution.get(tier, 0)
+            if count > 0:
+                avg_order = TIER_AVG_ORDER_VALUE.get(tier, 18000)
+                tier_revenue = count * conversion_rate * avg_order
+                tier_revenue_parts.append(f"  • {tier}: {count}人 × {conversion_rate:.1%} × ¥{avg_order:,} = ¥{tier_revenue:,.0f}")
+
+        if tier_revenue_parts:
+            description_parts.append("• 分层收入贡献:")
+            description_parts.extend(tier_revenue_parts)
+
+    # 优化建议
+    description_parts.append(f"\n💡 **优化建议**")
+
+    if audience_size < 50:
+        description_parts.append("• 人群规模偏小，建议适当放宽筛选条件")
+
+    if avg_score < 80:
+        description_parts.append("• 平均匹配度偏低，建议提升特征权重")
+
+    if tier_distribution.get("VVIP", 0) / audience_size > 0.7 if audience_size > 0 else False:
+        description_parts.append("• VVIP占比高，建议增加个性化服务触点")
+
+    if conversion_rate < 0.05:
+        description_parts.append("• 转化率较低，建议优化营销文案和触达渠道")
+
+    # Mark step as completed
+    thinking_steps[-1]["description"] = "\n".join(description_parts)
+    thinking_steps[-1]["status"] = "completed"
+
     return {
-        "metrics": metrics
+        "metrics": metrics,
+        "thinking_steps": thinking_steps
     }
 
 
@@ -206,9 +504,18 @@ async def response_generation_node(state: AgentState) -> dict[str, Any]:
     """
     logger.info("Executing response_generation_node")
 
+    thinking_steps = state.get("thinking_steps", [])
     audience = state.get("audience", [])
     metrics = state.get("metrics", {})
     intent = state.get("intent", {})
+
+    # Add fifth thinking step
+    thinking_steps.append({
+        "id": "5",
+        "title": "策略总结与建议",
+        "description": "正在生成营销策略总结...",
+        "status": "active"
+    })
 
     # Prepare analysis summary
     analysis_summary = {
@@ -231,8 +538,13 @@ async def response_generation_node(state: AgentState) -> dict[str, Any]:
         logger.error(f"Error generating response: {e}")
         response = f"已为您圈选{len(audience)}人高潜人群。预估转化率{metrics.get('conversion_rate', 0):.1%}，预估收入¥{metrics.get('estimated_revenue', 0):,.0f}。"
 
+    # Update thinking step with summary
+    thinking_steps[-1]["description"] = f"✅ 分析完成\n\n{response}"
+    thinking_steps[-1]["status"] = "completed"
+
     return {
-        "final_response": response
+        "final_response": response,
+        "thinking_steps": thinking_steps
     }
 
 

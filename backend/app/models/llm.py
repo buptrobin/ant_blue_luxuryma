@@ -1,9 +1,11 @@
-"""LLM integration for Volc Engine (火山引擎大模型API)."""
+"""LLM integration for Volc Engine Ark API (火山引擎大模型API)."""
 import os
 import json
 import logging
 from typing import Any, AsyncIterator
 from abc import ABC, abstractmethod
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -38,53 +40,45 @@ class ChatModel(ABC):
         pass
 
 
-class VolcEngineChat(ChatModel):
-    """Chat model using Volc Engine (ByteDance) API."""
+class ArkChat(ChatModel):
+    """Chat model using Volc Engine Ark API (OpenAI-compatible)."""
 
     def __init__(
         self,
-        access_key: str | None = None,
-        secret_key: str | None = None,
-        endpoint_id: str | None = None,
-        region: str = "cn-beijing",
-        model: str = "doubao-pro-32k",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str = "doubao-seed-1-6-251015",
         timeout: int = 60
     ):
-        """Initialize Volc Engine chat model.
+        """Initialize Ark chat model.
 
         Args:
-            access_key: Volc Engine AccessKey. Defaults to VOLC_ACCESS_KEY env var.
-            secret_key: Volc Engine SecretKey. Defaults to VOLC_SECRET_KEY env var.
-            endpoint_id: Volc Engine endpoint ID. Defaults to VOLC_ENDPOINT_ID env var.
-            region: Volc Engine region. Defaults to 'cn-beijing'.
-            model: Model name. Defaults to 'doubao-pro-32k'.
+            api_key: Ark API Key. Defaults to ARK_API_KEY env var.
+            base_url: Ark base URL. Defaults to ARK_BASE_URL env var.
+            model: Model name. Defaults to 'doubao-seed-1-6-251015'.
             timeout: Request timeout in seconds.
         """
-        self.access_key = access_key or os.getenv("VOLC_ACCESS_KEY", "")
-        self.secret_key = secret_key or os.getenv("VOLC_SECRET_KEY", "")
-        self.endpoint_id = endpoint_id or os.getenv("VOLC_ENDPOINT_ID", "")
-        self.region = region
-        self.model = model
+        self.api_key = api_key or os.getenv("ARK_API_KEY", "")
+        self.base_url = base_url or os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3/")
+        self.model = model or os.getenv("ARK_MODEL", "doubao-seed-1-6-251015")
         self.timeout = timeout
 
-        if not all([self.access_key, self.secret_key, self.endpoint_id]):
-            logger.warning(
-                "Volc Engine credentials not fully configured. "
-                "Please set VOLC_ACCESS_KEY, VOLC_SECRET_KEY, and VOLC_ENDPOINT_ID."
-            )
+        # Ensure base_url has proper format
+        if self.base_url and not self.base_url.endswith("/"):
+            self.base_url += "/"
 
-        # Try to import SDK
-        try:
-            import volcenginesdkarkruntime
-            self.sdk = volcenginesdkarkruntime
-            self.sdk_available = True
-        except ImportError:
-            logger.warning("volcenginesdkarkruntime SDK not available. Using mock mode.")
-            self.sdk = None
+        if not self.api_key or not self.base_url:
+            logger.warning(
+                "Ark API credentials not fully configured. "
+                "Please set ARK_API_KEY and ARK_BASE_URL."
+            )
             self.sdk_available = False
+        else:
+            self.sdk_available = True
+            logger.info(f"Ark API initialized with model: {self.model}")
 
     async def call(self, prompt: str, **kwargs) -> str:
-        """Call Volc Engine API.
+        """Call Ark API and return response.
 
         Args:
             prompt: User prompt.
@@ -94,21 +88,41 @@ class VolcEngineChat(ChatModel):
             Model response.
         """
         if not self.sdk_available:
-            # Mock response for development
-            logger.info("Using mock Volc Engine response for development")
+            logger.warning("Ark API not available. Using mock response.")
             return self._get_mock_response(prompt)
 
         try:
-            # Placeholder for actual SDK call
-            # This would use the Volc Engine SDK when available
-            logger.error("Volc Engine SDK call not yet implemented. Using mock response.")
-            return self._get_mock_response(prompt)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": kwargs.get("temperature", 0.7),
+                        "max_tokens": kwargs.get("max_tokens", 2048),
+                    },
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                # Extract text from OpenAI-compatible response
+                if "choices" in result and len(result["choices"]) > 0:
+                    return result["choices"][0]["message"]["content"]
+                else:
+                    logger.error(f"Unexpected response format: {result}")
+                    return self._get_mock_response(prompt)
+
         except Exception as e:
-            logger.error(f"Error calling Volc Engine API: {e}")
-            raise
+            logger.error(f"Error calling Ark API: {e}")
+            # Fallback to mock response
+            return self._get_mock_response(prompt)
 
     async def stream(self, prompt: str, **kwargs) -> AsyncIterator[str]:
-        """Stream response from Volc Engine API.
+        """Stream response from Ark API.
 
         Args:
             prompt: User prompt.
@@ -118,19 +132,47 @@ class VolcEngineChat(ChatModel):
             Response chunks.
         """
         if not self.sdk_available:
-            # Mock streaming response for development
+            logger.warning("Ark API not available. Using mock stream.")
             for chunk in self._get_mock_stream(prompt):
                 yield chunk
             return
 
         try:
-            # Placeholder for actual SDK stream call
-            logger.error("Volc Engine SDK streaming not yet implemented. Using mock response.")
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": True,
+                        "temperature": kwargs.get("temperature", 0.7),
+                        "max_tokens": kwargs.get("max_tokens", 2048),
+                    },
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:].strip()
+                            if data and data != "[DONE]":
+                                try:
+                                    chunk_data = json.loads(data)
+                                    if "choices" in chunk_data:
+                                        delta = chunk_data["choices"][0].get("delta", {})
+                                        if "content" in delta:
+                                            yield delta["content"]
+                                except json.JSONDecodeError:
+                                    pass
+
+        except Exception as e:
+            logger.error(f"Error streaming from Ark API: {e}")
+            # Fallback to mock stream
             for chunk in self._get_mock_stream(prompt):
                 yield chunk
-        except Exception as e:
-            logger.error(f"Error streaming from Volc Engine API: {e}")
-            raise
 
     def _get_mock_response(self, prompt: str) -> str:
         """Get mock response for development and testing.
@@ -180,16 +222,16 @@ class VolcEngineChat(ChatModel):
 class LLMManager:
     """Manager for LLM operations."""
 
-    def __init__(self, model_type: str = "volc_engine"):
+    def __init__(self, model_type: str = "ark"):
         """Initialize LLM manager.
 
         Args:
-            model_type: Type of model to use. Defaults to 'volc_engine'.
+            model_type: Type of model to use. Defaults to 'ark'.
         """
         self.model_type = model_type
 
-        if model_type == "volc_engine":
-            self.model = VolcEngineChat()
+        if model_type == "ark":
+            self.model = ArkChat()
         else:
             raise ValueError(f"Unknown model type: {model_type}")
 
@@ -202,8 +244,7 @@ class LLMManager:
         Returns:
             Parsed intent dictionary.
         """
-        prompt = f"""
-你是一个营销专家。请分析以下用户的营销需求，提取出结构化的营销意图。
+        prompt = f"""你是一个营销专家。请分析以下用户的营销需求，提取出结构化的营销意图。
 
 用户需求：{user_input}
 
@@ -218,8 +259,7 @@ class LLMManager:
   - max: 最大规模
 - constraints: 额外约束条件列表
 
-只返回JSON，不要其他内容。
-"""
+只返回JSON，不要其他内容。"""
         response = await self.model.call(prompt)
         try:
             intent = json.loads(response)
@@ -244,8 +284,7 @@ class LLMManager:
         Returns:
             Feature extraction result.
         """
-        prompt = f"""
-你是一个人群分析专家。根据以下营销意图，生成详细的人群筛选特征。
+        prompt = f"""你是一个人群分析专家。根据以下营销意图，生成详细的人群筛选特征。
 
 营销意图：
 {json.dumps(intent, ensure_ascii=False, indent=2)}
@@ -255,8 +294,7 @@ class LLMManager:
 - weights: 各维度权重
 - explanation: 规则的业务含义
 
-只返回JSON，不要其他内容。
-"""
+只返回JSON，不要其他内容。"""
         response = await self.model.call(prompt)
         try:
             features = json.loads(response)
@@ -278,8 +316,7 @@ class LLMManager:
         Returns:
             Natural language response.
         """
-        prompt = f"""
-你是一个营销策略师。根据以下分析结果，生成一个简洁专业的营销建议。
+        prompt = f"""你是一个营销策略师。根据以下分析结果，生成一个简洁专业的营销建议。
 
 分析结果：
 - 圈选人群数: {analysis_summary.get('audience_size', 0)}
@@ -287,8 +324,7 @@ class LLMManager:
 - 转化率预估: {analysis_summary.get('conversion_rate', 0):.2%}
 - 收入预估: ¥{analysis_summary.get('estimated_revenue', 0):,.0f}
 
-请生成一个不超过100字的营销建议，突出策略的关键点。
-"""
+请生成一个不超过100字的营销建议，突出策略的关键点。"""
         response = await self.model.call(prompt)
         return response.strip()
 

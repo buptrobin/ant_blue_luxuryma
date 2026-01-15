@@ -1,12 +1,15 @@
 import React from 'react';
 import { Steps, Collapse, theme } from 'antd';
-import { 
-  CheckCircleOutlined, 
-  LoadingOutlined, 
-  ClockCircleOutlined, 
-  BulbOutlined 
+import {
+  CheckCircleOutlined,
+  LoadingOutlined,
+  ClockCircleOutlined,
+  BulbOutlined
 } from '@ant-design/icons';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ThinkingStep, ThinkingStepStatus } from '../types';
+import './ThinkingProcess.css';
 
 const { Panel } = Collapse;
 
@@ -60,8 +63,23 @@ const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ steps, isExpanded, on
             items={steps.map(step => ({
               title: step.title,
               description: step.status !== ThinkingStepStatus.Pending ? (
-                <div className="text-xs text-gray-500 mt-1 mb-2 whitespace-pre-line font-mono bg-white p-2 rounded border border-gray-100">
-                  {step.description}
+                <div className="thinking-step-description">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      // 自定义渲染组件
+                      strong: ({children}) => <strong className="text-blue-600 font-semibold">{children}</strong>,
+                      p: ({children}) => <p className="mb-2 last:mb-0">{children}</p>,
+                      ul: ({children}) => <ul className="list-disc ml-5 mb-2 space-y-1">{children}</ul>,
+                      ol: ({children}) => <ol className="list-decimal ml-5 mb-2 space-y-1">{children}</ol>,
+                      li: ({children}) => <li className="text-gray-700">{children}</li>,
+                      code: ({children}) => <code className="bg-gray-100 px-1 py-0.5 rounded text-sm font-mono">{children}</code>,
+                      h3: ({children}) => <h3 className="text-base font-bold mt-3 mb-2 text-gray-800">{children}</h3>,
+                      h4: ({children}) => <h4 className="text-sm font-semibold mt-2 mb-1 text-gray-700">{children}</h4>,
+                    }}
+                  >
+                    {step.description}
+                  </ReactMarkdown>
                 </div>
               ) : null,
               status: getStepStatus(step.status),

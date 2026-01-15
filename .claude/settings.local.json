@@ -6,7 +6,11 @@
       "Bash(timeout 5 curl -s http://localhost:8000/)",
       "Bash(timeout 5 curl:*)",
       "Bash(timeout 30 curl:*)",
-      "Bash(timeout 30 python:*)"
+      "Bash(timeout 30 python:*)",
+      "Bash(tree:*)",
+      "Bash(ls:*)",
+      "Bash(curl:*)",
+      "Bash(npm install:*)"
     ]
   }
 }

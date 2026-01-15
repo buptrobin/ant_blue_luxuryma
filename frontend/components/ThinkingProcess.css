@@ -1,0 +1,243 @@
+/* ThinkingProcess.css - Markdown渲染样式 */
+
+.thinking-step-description {
+  font-size: 0.875rem;
+  color: #374151;
+  margin-top: 0.5rem;
+  margin-bottom: 0.75rem;
+  background: white;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  line-height: 1.8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+               'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+/* 标题样式 */
+.thinking-step-description h1,
+.thinking-step-description h2,
+.thinking-step-description h3,
+.thinking-step-description h4 {
+  font-weight: 700;
+  color: #1f2937;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.thinking-step-description h1 {
+  font-size: 1.25rem;
+}
+
+.thinking-step-description h2 {
+  font-size: 1.125rem;
+}
+
+.thinking-step-description h3 {
+  font-size: 1rem;
+}
+
+.thinking-step-description h4 {
+  font-size: 0.875rem;
+}
+
+/* 段落样式 */
+.thinking-step-description p {
+  margin-bottom: 0.5rem;
+  color: #374151;
+}
+
+.thinking-step-description p:last-child {
+  margin-bottom: 0;
+}
+
+/* 粗体文本 */
+.thinking-step-description strong {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+/* 斜体文本 */
+.thinking-step-description em {
+  font-style: italic;
+  color: #4b5563;
+}
+
+/* 列表样式 */
+.thinking-step-description ul {
+  list-style: none;
+  margin-left: 0;
+  margin-bottom: 0.75rem;
+}
+
+.thinking-step-description ul li {
+  position: relative;
+  padding-left: 1.25rem;
+  color: #374151;
+  margin-bottom: 0.25rem;
+}
+
+.thinking-step-description ul li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: #3b82f6;
+  font-weight: 700;
+}
+
+.thinking-step-description ol {
+  list-style: decimal;
+  margin-left: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.thinking-step-description ol li {
+  color: #374151;
+  margin-bottom: 0.25rem;
+}
+
+/* 代码样式 */
+.thinking-step-description code {
+  background: #f3f4f6;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #ec4899;
+}
+
+.thinking-step-description pre {
+  background: #f9fafb;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+
+.thinking-step-description pre code {
+  background: transparent;
+  padding: 0;
+  color: #1f2937;
+}
+
+/* 引用样式 */
+.thinking-step-description blockquote {
+  border-left: 4px solid #60a5fa;
+  padding-left: 1rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  background: #eff6ff;
+  color: #374151;
+  font-style: italic;
+}
+
+/* 分隔线 */
+.thinking-step-description hr {
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* 链接样式 */
+.thinking-step-description a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.thinking-step-description a:hover {
+  color: #1e40af;
+}
+
+/* 表格样式 */
+.thinking-step-description table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+}
+
+.thinking-step-description th {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  padding: 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  color: #374151;
+}
+
+.thinking-step-description td {
+  border: 1px solid #d1d5db;
+  padding: 0.75rem;
+  color: #374151;
+}
+
+/* Emoji 支持 */
+.thinking-step-description img[alt*="emoji"] {
+  display: inline-block;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* 数学公式样式 */
+.thinking-step-description .math {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
+  background: #f9fafb;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+/* 删除线 */
+.thinking-step-description del {
+  text-decoration: line-through;
+  color: #9ca3af;
+}
+
+/* 任务列表 */
+.thinking-step-description input[type="checkbox"] {
+  margin-right: 0.5rem;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .thinking-step-description {
+    padding: 0.75rem;
+    font-size: 0.75rem;
+  }
+}
+
+/* 动画效果 */
+.thinking-step-description {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 特殊标记样式 */
+.thinking-step-description mark {
+  background: #fef3c7;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+
+/* 脚注样式 */
+.thinking-step-description sup {
+  font-size: 0.75rem;
+  color: #2563eb;
+}
+
+/* 下标样式 */
+.thinking-step-description sub {
+  font-size: 0.75rem;
+}
