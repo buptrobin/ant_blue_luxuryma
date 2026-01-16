@@ -219,23 +219,39 @@ async def analyze_marketing_goal_stream(
                 "previous_intent": session.current_context.get("latest_intent") if session.turns else None
             }
 
-            # Run the agent graph
+            # Run the agent graph with real-time streaming
             graph = get_agent_graph()
-            final_state = await graph.ainvoke(initial_state)
+            final_state = None
 
-            # Stream thinking steps
-            thinking_steps = final_state.get("thinking_steps", [])
-            for step in thinking_steps:
-                step_event = {
-                    "stepId": step["id"],
-                    "title": step["title"],
-                    "description": step["description"],
-                    "status": step["status"]
-                }
-                yield f"event: thinking_step\n"
-                yield f"data: {json.dumps(step_event, ensure_ascii=False)}\n\n"
+            # Use astream() to get real-time node outputs
+            async for output in graph.astream(initial_state):
+                # Output format: {node_name: node_output_state}
+                for node_name, node_output in output.items():
+                    logger.info(f"Node '{node_name}' completed, streaming its thinking step")
 
-            # Extract results
+                    # Get thinking steps from current node output
+                    thinking_steps = node_output.get("thinking_steps", [])
+
+                    # Find and stream the latest thinking step(s) added by this node
+                    if thinking_steps:
+                        # Typically the last step is the one just added by this node
+                        latest_step = thinking_steps[-1]
+                        step_event = {
+                            "stepId": latest_step["id"],
+                            "title": latest_step["title"],
+                            "description": latest_step["description"],
+                            "status": latest_step["status"]
+                        }
+                        yield f"event: thinking_step\n"
+                        yield f"data: {json.dumps(step_event, ensure_ascii=False)}\n\n"
+
+                    # Save the latest state
+                    final_state = node_output
+
+            # Extract results from final state
+            if not final_state:
+                raise ValueError("Graph execution completed but no final state received")
+
             audience_list = final_state.get("audience", [])
             metrics_data = final_state.get("metrics", {})
             response_text = final_state.get("final_response", "")
@@ -275,13 +291,13 @@ async def analyze_marketing_goal_stream(
             )
             session.add_turn(turn)
 
-            # Stream final result
+            # Stream final result (thinking steps already streamed above)
             result = {
                 "session_id": session.session_id,
                 "audience": audience,
                 "metrics": metrics,
                 "response": response_text,
-                "thinkingSteps": thinking_steps,
+                "thinkingSteps": final_state.get("thinking_steps", []),
                 "timestamp": datetime.now().isoformat()
             }
             yield f"event: analysis_complete\n"
@@ -393,8 +409,67 @@ async def predict_metrics(request: PredictionRequest) -> PredictionMetrics:
 
 @router.get("/health")
 async def health_check() -> dict:
-    """Health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    """
+    Health check endpoint with component initialization status.
+
+    Returns:
+        Health status including LLM, Graph, and Session Manager readiness.
+    """
+    from app.models.llm import get_llm_manager
+    from app.agent.graph import get_agent_graph
+    from app.core.session import get_session_manager
+
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "components": {}
+    }
+
+    try:
+        # Check LLM Manager
+        llm_manager = get_llm_manager()
+        health_status["components"]["llm_manager"] = {
+            "status": "ready",
+            "model_type": llm_manager.model_type,
+            "sdk_available": llm_manager.model.sdk_available if hasattr(llm_manager.model, 'sdk_available') else True
+        }
+    except Exception as e:
+        health_status["components"]["llm_manager"] = {
+            "status": "error",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+
+    try:
+        # Check Agent Graph
+        agent_graph = get_agent_graph()
+        health_status["components"]["agent_graph"] = {
+            "status": "ready",
+            "nodes": 5
+        }
+    except Exception as e:
+        health_status["components"]["agent_graph"] = {
+            "status": "error",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+
+    try:
+        # Check Session Manager
+        session_manager = get_session_manager()
+        active_sessions = len(session_manager.sessions)
+        health_status["components"]["session_manager"] = {
+            "status": "ready",
+            "active_sessions": active_sessions
+        }
+    except Exception as e:
+        health_status["components"]["session_manager"] = {
+            "status": "error",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+
+    return health_status
 
 
 # ====== Session Management Endpoints ======

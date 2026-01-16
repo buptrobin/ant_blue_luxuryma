@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Manage FastAPI lifespan (startup/shutdown)."""
     # Startup
+    logger.info("=" * 60)
     logger.info("Starting Marketing Agent API")
+    logger.info("=" * 60)
 
     # Log environment configuration
     ark_api_key = os.getenv("ARK_API_KEY", "")
@@ -43,9 +45,42 @@ async def lifespan(app: FastAPI):
         logger.warning(f"  ARK_API_KEY present: {bool(ark_api_key)}")
         logger.warning(f"  ARK_BASE_URL present: {bool(ark_base_url)}")
 
+    # ========== Warmup: Preload resources ==========
+    logger.info("🔥 Starting warmup sequence...")
+
+    try:
+        # 1. Initialize LLM Manager
+        from app.models.llm import get_llm_manager
+        logger.info("  [1/3] Initializing LLM Manager...")
+        llm_manager = get_llm_manager()
+        logger.info(f"  ✓ LLM Manager initialized: {llm_manager.model_type} model")
+
+        # 2. Compile Agent Graph
+        from app.agent.graph import get_agent_graph
+        logger.info("  [2/3] Compiling Agent Graph...")
+        agent_graph = get_agent_graph()
+        logger.info("  ✓ Agent Graph compiled with 5 nodes")
+
+        # 3. Initialize Session Manager
+        from app.core.session import get_session_manager
+        logger.info("  [3/3] Initializing Session Manager...")
+        session_manager = get_session_manager()
+        logger.info("  ✓ Session Manager initialized")
+
+        logger.info("🚀 Warmup completed successfully!")
+        logger.info("=" * 60)
+
+    except Exception as e:
+        logger.error(f"❌ Warmup failed: {e}", exc_info=True)
+        logger.warning("⚠ Application will continue but may experience slower first request")
+        logger.info("=" * 60)
+
     yield
+
     # Shutdown
+    logger.info("=" * 60)
     logger.info("Shutting down Marketing Agent API")
+    logger.info("=" * 60)
 
 
 # Create FastAPI app

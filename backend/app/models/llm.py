@@ -99,7 +99,7 @@ class ArkChat(ChatModel):
                         "model": self.model,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": kwargs.get("temperature", 0.7),
-                        "max_tokens": kwargs.get("max_tokens", 2048),
+                        "max_tokens": kwargs.get("max_tokens", 800),  # Reduced from 2048
                     },
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
@@ -147,7 +147,7 @@ class ArkChat(ChatModel):
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": True,
                         "temperature": kwargs.get("temperature", 0.7),
-                        "max_tokens": kwargs.get("max_tokens", 2048),
+                        "max_tokens": kwargs.get("max_tokens", 800),  # Reduced from 2048
                     },
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
@@ -327,6 +327,142 @@ class LLMManager:
 请生成一个不超过100字的营销建议，突出策略的关键点。"""
         response = await self.model.call(prompt)
         return response.strip()
+
+    async def analyze_intent_stream(self, user_input: str) -> AsyncIterator[dict[str, Any]]:
+        """Analyze user input with streaming (yields chunks in real-time).
+
+        Args:
+            user_input: User's marketing goal/prompt.
+
+        Yields:
+            Dict with 'type' and 'data':
+            - {"type": "chunk", "data": str} - Text chunk from LLM
+            - {"type": "complete", "data": dict} - Final parsed intent
+            - {"type": "error", "data": str} - Error message
+        """
+        prompt = f"""你是一个营销专家。请分析以下用户的营销需求，提取出结构化的营销意图。
+
+用户需求：{user_input}
+
+请返回一个JSON格式的结果，包含以下字段：
+- kpi: 核心KPI目标 (conversion_rate/revenue/visit_rate)
+- target_tiers: 目标会员等级 (VVIP/VIP/Member)
+- behavior_filters: 行为筛选条件
+  - browse_frequency: 浏览频次阈值 (0-100)
+  - engagement_level: 参与度级别 (high/medium/low)
+- size_preference: 人群规模偏好
+  - min: 最小规模
+  - max: 最大规模
+- constraints: 额外约束条件列表
+
+只返回JSON，不要其他内容。"""
+
+        full_response = ""
+        try:
+            async for chunk in self.model.stream(prompt):
+                full_response += chunk
+                yield {"type": "chunk", "data": chunk}
+
+            # Try to parse final JSON
+            try:
+                intent = json.loads(full_response)
+                yield {"type": "complete", "data": intent}
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse intent response: {full_response}")
+                # Return default intent
+                default_intent = {
+                    "kpi": "conversion_rate",
+                    "target_tiers": ["VVIP", "VIP"],
+                    "behavior_filters": {},
+                    "size_preference": {"min": 50, "max": 500},
+                    "constraints": []
+                }
+                yield {"type": "complete", "data": default_intent}
+
+        except Exception as e:
+            logger.error(f"Error in analyze_intent_stream: {e}")
+            yield {"type": "error", "data": str(e)}
+
+    async def extract_features_stream(self, intent: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """Extract features with streaming.
+
+        Args:
+            intent: Parsed user intent.
+
+        Yields:
+            Dict with 'type' and 'data':
+            - {"type": "chunk", "data": str} - Text chunk
+            - {"type": "complete", "data": dict} - Final features
+            - {"type": "error", "data": str} - Error message
+        """
+        prompt = f"""你是一个人群分析专家。根据以下营销意图，生成详细的人群筛选特征。
+
+营销意图：
+{json.dumps(intent, ensure_ascii=False, indent=2)}
+
+请生成包含以下信息的JSON结果：
+- feature_rules: 筛选规则列表
+- weights: 各维度权重
+- explanation: 规则的业务含义
+
+只返回JSON，不要其他内容。"""
+
+        full_response = ""
+        try:
+            async for chunk in self.model.stream(prompt):
+                full_response += chunk
+                yield {"type": "chunk", "data": chunk}
+
+            # Try to parse final JSON
+            try:
+                features = json.loads(full_response)
+                yield {"type": "complete", "data": features}
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse features response: {full_response}")
+                default_features = {
+                    "feature_rules": [],
+                    "weights": {},
+                    "explanation": ""
+                }
+                yield {"type": "complete", "data": default_features}
+
+        except Exception as e:
+            logger.error(f"Error in extract_features_stream: {e}")
+            yield {"type": "error", "data": str(e)}
+
+    async def generate_response_stream(self, analysis_summary: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """Generate response with streaming.
+
+        Args:
+            analysis_summary: Summary of the analysis.
+
+        Yields:
+            Dict with 'type' and 'data':
+            - {"type": "chunk", "data": str} - Text chunk
+            - {"type": "complete", "data": str} - Final response
+            - {"type": "error", "data": str} - Error message
+        """
+        prompt = f"""你是一个营销策略师。根据以下分析结果，生成一个简洁专业的营销建议。
+
+分析结果：
+- 圈选人群数: {analysis_summary.get('audience_size', 0)}
+- 平均匹配度: {analysis_summary.get('avg_score', 0):.1f}
+- 转化率预估: {analysis_summary.get('conversion_rate', 0):.2%}
+- 收入预估: ¥{analysis_summary.get('estimated_revenue', 0):,.0f}
+
+请生成一个不超过100字的营销建议，突出策略的关键点。"""
+
+        full_response = ""
+        try:
+            async for chunk in self.model.stream(prompt):
+                full_response += chunk
+                yield {"type": "chunk", "data": chunk}
+
+            yield {"type": "complete", "data": full_response.strip()}
+
+        except Exception as e:
+            logger.error(f"Error in generate_response_stream: {e}")
+            yield {"type": "error", "data": str(e)}
 
 
 # Global LLM manager instance
