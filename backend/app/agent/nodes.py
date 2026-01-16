@@ -46,10 +46,11 @@ async def intent_analysis_node(state: AgentState) -> dict[str, Any]:
     is_modification = state.get("is_modification", False)
     previous_intent = state.get("previous_intent")
 
+    intent = None
     try:
         # Use context-aware prompt for multi-turn
         if conversation_context and is_modification and previous_intent:
-            # User is modifying existing intent
+            # User is modifying existing intent - use non-streaming for simplicity
             prompt_context = f"""你是一个营销专家。用户正在修改现有的营销策略。
 
 {conversation_context}
@@ -75,13 +76,31 @@ async def intent_analysis_node(state: AgentState) -> dict[str, Any]:
             logger.info(f"Modified intent based on context: {intent}")
 
         else:
-            # Fresh analysis
-            intent = await llm.analyze_intent(user_input)
-            logger.info(f"Extracted fresh intent: {intent}")
+            # Fresh analysis - use streaming for faster first token
+            logger.info("Using streaming LLM call for intent analysis")
+            chunk_count = 0
+            async for event in llm.analyze_intent_stream(user_input):
+                if event["type"] == "chunk":
+                    chunk_count += 1
+                    if chunk_count == 1:
+                        logger.info(f"✅ First token received! Streaming in progress...")
+                    # Log every 20 chunks to show progress
+                    if chunk_count % 20 == 0:
+                        logger.info(f"  Received {chunk_count} tokens...")
+                elif event["type"] == "complete":
+                    intent = event["data"]
+                    logger.info(f"Extracted fresh intent (received {chunk_count} tokens total)")
+                    logger.info(f"[DEBUG] Intent content: {intent}")  # Debug log
+                    break
+                elif event["type"] == "error":
+                    raise Exception(event["data"])
 
     except Exception as e:
         logger.error(f"Error analyzing intent: {e}")
-        # Fallback to default or previous intent
+        intent = None
+
+    # Fallback to default or previous intent if needed
+    if intent is None:
         if previous_intent:
             intent = previous_intent
         else:
@@ -185,11 +204,30 @@ async def feature_extraction_node(state: AgentState) -> dict[str, Any]:
 
     llm = get_llm_manager()
 
+    features = None
     try:
-        features = await llm.extract_features(intent)
-        logger.info(f"Extracted features: {features}")
+        # Use streaming for faster first token
+        logger.info("Using streaming LLM call for feature extraction")
+        chunk_count = 0
+        async for event in llm.extract_features_stream(intent):
+            if event["type"] == "chunk":
+                chunk_count += 1
+                if chunk_count == 1:
+                    logger.info(f"✅ First token received! Streaming in progress...")
+                if chunk_count % 20 == 0:
+                    logger.info(f"  Received {chunk_count} tokens...")
+            elif event["type"] == "complete":
+                features = event["data"]
+                logger.info(f"Extracted features (received {chunk_count} tokens total)")
+                break
+            elif event["type"] == "error":
+                raise Exception(event["data"])
     except Exception as e:
         logger.error(f"Error extracting features: {e}")
+        features = None
+
+    # Fallback if needed
+    if features is None:
         features = {
             "feature_rules": [],
             "weights": {},
@@ -531,11 +569,30 @@ async def response_generation_node(state: AgentState) -> dict[str, Any]:
 
     llm = get_llm_manager()
 
+    response = None
     try:
-        response = await llm.generate_response(analysis_summary)
-        logger.info(f"Generated response: {response}")
+        # Use streaming for faster first token
+        logger.info("Using streaming LLM call for response generation")
+        chunk_count = 0
+        async for event in llm.generate_response_stream(analysis_summary):
+            if event["type"] == "chunk":
+                chunk_count += 1
+                if chunk_count == 1:
+                    logger.info(f"✅ First token received! Streaming in progress...")
+                if chunk_count % 20 == 0:
+                    logger.info(f"  Received {chunk_count} tokens...")
+            elif event["type"] == "complete":
+                response = event["data"]
+                logger.info(f"Generated response (received {chunk_count} tokens total)")
+                break
+            elif event["type"] == "error":
+                raise Exception(event["data"])
     except Exception as e:
         logger.error(f"Error generating response: {e}")
+        response = None
+
+    # Fallback if needed
+    if response is None:
         response = f"已为您圈选{len(audience)}人高潜人群。预估转化率{metrics.get('conversion_rate', 0):.1%}，预估收入¥{metrics.get('estimated_revenue', 0):,.0f}。"
 
     # Update thinking step with summary

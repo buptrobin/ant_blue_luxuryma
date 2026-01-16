@@ -223,11 +223,28 @@ async def analyze_marketing_goal_stream(
             graph = get_agent_graph()
             final_state = None
 
+            # Send initial "active" status for all 5 steps immediately
+            # This gives users instant feedback
+            initial_steps = [
+                {"stepId": "1", "title": "业务意图与约束解析", "description": "正在分析营销目标和核心KPI...", "status": "active"},
+                {"stepId": "2", "title": "多维特征扫描", "description": "正在提取人群的消费力、兴趣、活跃度等特征...", "status": "pending"},
+                {"stepId": "3", "title": "人群策略组合计算", "description": "正在圈选高潜力目标人群...", "status": "pending"},
+                {"stepId": "4", "title": "效果预测与优化", "description": "正在预测营销活动的核心业绩指标...", "status": "pending"},
+                {"stepId": "5", "title": "策略总结与建议", "description": "正在生成营销策略总结...", "status": "pending"},
+            ]
+
+            # Send all steps immediately
+            for step in initial_steps:
+                yield f"event: thinking_step\n"
+                yield f"data: {json.dumps(step, ensure_ascii=False)}\n\n"
+
+            logger.info("Sent initial thinking steps framework to frontend")
+
             # Use astream() to get real-time node outputs
             async for output in graph.astream(initial_state):
                 # Output format: {node_name: node_output_state}
                 for node_name, node_output in output.items():
-                    logger.info(f"Node '{node_name}' completed, streaming its thinking step")
+                    logger.info(f"Node '{node_name}' completed, streaming updated thinking step")
 
                     # Get thinking steps from current node output
                     thinking_steps = node_output.get("thinking_steps", [])
@@ -236,13 +253,14 @@ async def analyze_marketing_goal_stream(
                     if thinking_steps:
                         # Typically the last step is the one just added by this node
                         latest_step = thinking_steps[-1]
+                        # Update the step status to "completed" with real description
                         step_event = {
                             "stepId": latest_step["id"],
                             "title": latest_step["title"],
                             "description": latest_step["description"],
-                            "status": latest_step["status"]
+                            "status": "completed"  # Mark as completed
                         }
-                        yield f"event: thinking_step\n"
+                        yield f"event: thinking_step_update\n"  # Different event type for update
                         yield f"data: {json.dumps(step_event, ensure_ascii=False)}\n\n"
 
                     # Save the latest state

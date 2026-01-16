@@ -52,17 +52,21 @@ class AudienceSelector:
 
         if "browse_frequency" in behavior_criteria:
             min_frequency = behavior_criteria["browse_frequency"]
-            # Simulate: higher score indicates more browsing
-            filtered = [u for u in filtered if u["score"] >= min_frequency]
+            # Skip if None
+            if min_frequency is not None:
+                # Simulate: higher score indicates more browsing
+                filtered = [u for u in filtered if u["score"] >= min_frequency]
 
         if "engagement_level" in behavior_criteria:
             level = behavior_criteria["engagement_level"]
-            if level == "high":
-                filtered = [u for u in filtered if u["score"] >= 90]
-            elif level == "medium":
-                filtered = [u for u in filtered if 80 <= u["score"] < 90]
-            elif level == "low":
-                filtered = [u for u in filtered if u["score"] < 80]
+            # Skip if None
+            if level is not None:
+                if level == "high":
+                    filtered = [u for u in filtered if u["score"] >= 90]
+                elif level == "medium":
+                    filtered = [u for u in filtered if 80 <= u["score"] < 90]
+                elif level == "low":
+                    filtered = [u for u in filtered if u["score"] < 80]
 
         return filtered
 

@@ -131,6 +131,10 @@ class ArkChat(ChatModel):
         Yields:
             Response chunks.
         """
+        # Log the max_tokens parameter for debugging
+        max_tokens_param = kwargs.get("max_tokens", 800)
+        logger.info(f"[DEBUG] stream() called with max_tokens={max_tokens_param}")
+
         if not self.sdk_available:
             logger.warning("Ark API not available. Using mock stream.")
             for chunk in self._get_mock_stream(prompt):
@@ -355,13 +359,17 @@ class LLMManager:
   - max: 最大规模
 - constraints: 额外约束条件列表
 
-只返回JSON，不要其他内容。"""
+重要：只返回JSON对象，不要任何解释、不要markdown代码块、不要其他文字。直接输出纯JSON。"""
 
         full_response = ""
         try:
-            async for chunk in self.model.stream(prompt):
+            async for chunk in self.model.stream(prompt, max_tokens=300):  # 严格限制 tokens
                 full_response += chunk
                 yield {"type": "chunk", "data": chunk}
+
+            # Log the full response for debugging
+            logger.info(f"[DEBUG] Full LLM response length: {len(full_response)} chars")
+            logger.debug(f"[DEBUG] Full response preview: {full_response[:500]}...")
 
             # Try to parse final JSON
             try:
@@ -405,11 +413,11 @@ class LLMManager:
 - weights: 各维度权重
 - explanation: 规则的业务含义
 
-只返回JSON，不要其他内容。"""
+重要：只返回JSON对象，不要任何解释、不要markdown代码块、不要其他文字。直接输出纯JSON。"""
 
         full_response = ""
         try:
-            async for chunk in self.model.stream(prompt):
+            async for chunk in self.model.stream(prompt, max_tokens=400):  # 限制 tokens
                 full_response += chunk
                 yield {"type": "chunk", "data": chunk}
 

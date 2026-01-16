@@ -8,7 +8,7 @@
  * - SSE streaming for real-time thinking steps
  */
 
-const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE = process.env.REACT_APP_API_URL || 'http://10.1.6.170:8000';
 
 export interface User {
   id: string;
@@ -77,6 +77,21 @@ export async function analyzeMarketingGoalStream(
         });
       } catch (e) {
         console.error('Error parsing thinking step:', e);
+      }
+    });
+
+    // Listen to thinking_step_update events for real-time node completion updates
+    eventSource.addEventListener('thinking_step_update', (event) => {
+      try {
+        const data: ThinkingStepEvent = JSON.parse(event.data);
+        onThinkingStep({
+          id: data.stepId,
+          title: data.title,
+          description: data.description,
+          status: data.status as 'pending' | 'active' | 'completed',
+        });
+      } catch (e) {
+        console.error('Error parsing thinking step update:', e);
       }
     });
 
