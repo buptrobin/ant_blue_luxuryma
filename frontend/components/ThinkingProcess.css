@@ -241,3 +241,8 @@
 .thinking-step-description sub {
   font-size: 0.75rem;
 }
+
+/* 隐藏段落开头的换行符，避免首行空行 */
+.thinking-step-description p > br.data-split:first-child {
+  display: none;
+}

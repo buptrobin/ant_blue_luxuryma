@@ -68,7 +68,7 @@ const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ steps, isExpanded, on
                     remarkPlugins={[remarkGfm]}
                     components={{
                       // 自定义渲染组件
-                      strong: ({children}) => <strong className="text-blue-600 font-semibold">{children}</strong>,
+                      strong: ({children}) => <><br className="data-split" /><strong className="text-blue-600 font-semibold">{children}</strong></>,
                       p: ({children}) => <p className="mb-2 last:mb-0">{children}</p>,
                       ul: ({children}) => <ul className="list-disc ml-5 mb-2 space-y-1">{children}</ul>,
                       ol: ({children}) => <ol className="list-decimal ml-5 mb-2 space-y-1">{children}</ol>,
