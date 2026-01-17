@@ -142,12 +142,16 @@ async def intent_analysis_node(state: AgentState) -> dict[str, Any]:
     # 行为筛选条件
     if behavior_filters:
         behavior_desc = []
-        if 'browse_frequency' in behavior_filters:
-            behavior_desc.append(f"浏览频次≥{behavior_filters['browse_frequency']}")
-        if 'engagement_level' in behavior_filters:
+        browse_freq = behavior_filters.get('browse_frequency')
+        if browse_freq is not None:
+            behavior_desc.append(f"浏览频次≥{browse_freq}")
+
+        engagement = behavior_filters.get('engagement_level')
+        if engagement is not None:
             level_map = {'high': '高', 'medium': '中', 'low': '低'}
-            level_val = behavior_filters['engagement_level']
-            behavior_desc.append(f"参与度{level_map.get(level_val, str(level_val) if level_val else '未知')}")
+            level_val = level_map.get(engagement, engagement)
+            behavior_desc.append(f"参与度{level_val}")
+
         # Filter out None values before joining
         behavior_desc = [b for b in behavior_desc if b is not None]
         if behavior_desc:
@@ -249,13 +253,16 @@ async def feature_extraction_node(state: AgentState) -> dict[str, Any]:
     behavior_filters = intent.get('behavior_filters', {})
     if behavior_filters:
         behavior_features = []
-        if 'browse_frequency' in behavior_filters:
-            behavior_features.append(f"高频浏览用户（阈值{behavior_filters['browse_frequency']}）")
-        if 'engagement_level' in behavior_filters:
-            level = behavior_filters['engagement_level']
+        browse_freq = behavior_filters.get('browse_frequency')
+        if browse_freq is not None:
+            behavior_features.append(f"高频浏览用户（阈值{browse_freq}）")
+
+        engagement = behavior_filters.get('engagement_level')
+        if engagement is not None:
             level_desc = {'high': '高度活跃', 'medium': '中度活跃', 'low': '低活跃度'}
-            desc = level_desc.get(level, str(level) if level else '未知活跃度')
+            desc = level_desc.get(engagement, f'{engagement}活跃度')
             behavior_features.append(desc)
+
         # Filter out None values before joining
         behavior_features = [f for f in behavior_features if f is not None]
         if behavior_features:

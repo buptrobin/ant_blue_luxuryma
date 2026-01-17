@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Layout, Button } from 'antd';
 import { MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
 import ChatInterface from './components/ChatInterface';
@@ -10,11 +10,44 @@ const { Sider, Content } = Layout;
 const App: React.FC = () => {
   const [isDashboardVisible, setIsDashboardVisible] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(420);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!isDragging || collapsed) return;
+      let newWidth = event.clientX;
+      const minWidth = 280;
+      const maxWidth = Math.min(600, window.innerWidth - 480);
+      if (newWidth < minWidth) newWidth = minWidth;
+      if (newWidth > maxWidth) newWidth = maxWidth;
+      setSidebarWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      if (!isDragging) return;
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, collapsed]);
+
+  const handleDragStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (window.innerWidth < 992 || collapsed) return;
+    event.preventDefault();
+    setIsDragging(true);
+  };
 
   return (
     <Layout style={{ minHeight: '100vh', overflow: 'hidden' }}>
-      <Sider 
-        width={420} 
+      <Sider
+        width={sidebarWidth}
         collapsedWidth={0}
         trigger={null}
         collapsed={collapsed}
@@ -26,7 +59,7 @@ const App: React.FC = () => {
             if (broken) setCollapsed(true);
         }}
       >
-        <ChatInterface 
+        <ChatInterface
           onAnalyzeStart={() => {
             if (window.innerWidth < 992) setCollapsed(true);
           }}
@@ -35,16 +68,28 @@ const App: React.FC = () => {
           }}
         />
         {/* Mobile Toggle inside Sider for closing */}
-        <Button 
-            type="text" 
+        <Button
+            type="text"
             icon={<MenuFoldOutlined />}
             onClick={() => setCollapsed(true)}
             className="lg:hidden absolute top-4 right-4"
         />
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: -4,
+            width: 8,
+            height: '100%',
+            cursor: 'col-resize',
+            zIndex: 60,
+          }}
+          onMouseDown={handleDragStart}
+        />
       </Sider>
 
       {/* Main Layout */}
-      <Layout style={{ marginLeft: collapsed ? 0 : 420, transition: 'margin-left 0.2s' }}>
+      <Layout style={{ marginLeft: collapsed ? 0 : sidebarWidth, transition: 'margin-left 0.2s' }}>
         <Content className="relative h-screen bg-[#F1F5F9]">
             {/* Mobile Toggle for opening */}
             <Button
@@ -58,7 +103,7 @@ const App: React.FC = () => {
 
             <AnimatePresence mode="wait">
             {isDashboardVisible ? (
-                <motion.div 
+                <motion.div
                 key="dashboard"
                 className="h-full w-full"
                 initial={{ opacity: 0 }}
@@ -68,7 +113,7 @@ const App: React.FC = () => {
                 <Dashboard />
                 </motion.div>
             ) : (
-                <motion.div 
+                <motion.div
                 key="empty"
                 className="h-full w-full flex items-center justify-center bg-[#F1F5F9]"
                 initial={{ opacity: 0 }}
