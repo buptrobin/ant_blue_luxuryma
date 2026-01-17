@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>V2 流式分析 - 实时演示</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      overflow: hidden;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    .content {
+      padding: 30px;
+    }
+
+    .input-section {
+      margin-bottom: 30px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100px;
+      padding: 12px;
+      font-size: 14px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: inherit;
+      resize: vertical;
+      transition: border-color 0.3s;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+    }
+
+    button {
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s;
+      flex: 1;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-secondary {
+      background: #f5f5f5;
+      color: #666;
+    }
+
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #results {
+      margin-top: 30px;
+    }
+
+    .node {
+      margin-bottom: 20px;
+      padding: 20px;
+      border: 2px solid #e0e0e0;
+      border-radius: 10px;
+      transition: all 0.3s;
+      background: white;
+    }
+
+    .node.running {
+      border-color: #4CAF50;
+      background: linear-gradient(to right, #f1f8f4 0%, white 100%);
+      box-shadow: 0 4px 12px rgba(76, 175, 80, 0.15);
+    }
+
+    .node.completed {
+      border-color: #2196F3;
+      background: linear-gradient(to right, #e3f2fd 0%, white 100%);
+    }
+
+    .node-title {
+      font-weight: 600;
+      font-size: 16px;
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background-color: #ccc;
+    }
+
+    .running .status-indicator {
+      background-color: #4CAF50;
+      animation: pulse 1.5s infinite;
+    }
+
+    .completed .status-indicator {
+      background-color: #2196F3;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+      50% {
+        opacity: 0.6;
+        transform: scale(1.1);
+      }
+    }
+
+    .node-result {
+      margin-top: 15px;
+      white-space: pre-wrap;
+      line-height: 1.8;
+      color: #333;
+      padding: 15px;
+      background: #f9f9f9;
+      border-radius: 8px;
+    }
+
+    .reasoning {
+      background-color: #f5f5f5;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: 'Courier New', monospace;
+      max-height: 250px;
+      overflow-y: auto;
+      margin-top: 10px;
+      color: #555;
+      line-height: 1.6;
+    }
+
+    details {
+      margin-top: 12px;
+      cursor: pointer;
+    }
+
+    summary {
+      color: #666;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+
+    summary:hover {
+      background-color: #f5f5f5;
+    }
+
+    .final-result {
+      margin-top: 30px;
+      padding: 25px;
+      background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+      border-radius: 10px;
+      border-left: 5px solid #4CAF50;
+    }
+
+    .final-result h2 {
+      color: #2e7d32;
+      margin-bottom: 15px;
+      font-size: 20px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-top: 15px;
+    }
+
+    .metric-card {
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .metric-label {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 5px;
+    }
+
+    .metric-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: #2e7d32;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-left: 10px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .error {
+      background: #ffebee;
+      color: #c62828;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      border-left: 5px solid #c62828;
+    }
+
+    .info-banner {
+      background: #e3f2fd;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      border-left: 5px solid #2196F3;
+    }
+
+    .info-banner strong {
+      color: #1976d2;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🚀 V2 流式分析演示</h1>
+      <p class="subtitle">实时查看 LLM 推理过程和自然语言输出</p>
+    </header>
+
+    <div class="content">
+      <div class="info-banner">
+        <strong>💡 提示：</strong> 这是 V2 流式 endpoint 的实时演示。输入您的需求，立即看到每个节点的执行结果和 LLM 推理过程。
+      </div>
+
+      <div class="input-section">
+        <label for="promptInput">输入您的圈人需求：</label>
+        <textarea id="promptInput" placeholder="例如：我要为春季新款手袋上市做推广，圈选VVIP和VIP客户，年龄在25-44岁">我要为春季新款手袋上市做推广，圈选VVIP和VIP客户</textarea>
+
+        <div class="button-group">
+          <button class="btn-primary" onclick="startAnalysis()" id="startBtn">
+            开始分析
+          </button>
+          <button class="btn-secondary" onclick="clearResults()" id="clearBtn">
+            清空结果
+          </button>
+        </div>
+      </div>
+
+      <div id="results"></div>
+    </div>
+  </div>
+
+  <script>
+    let eventSource = null;
+    const nodes = {};
+
+    function startAnalysis() {
+      const prompt = document.getElementById('promptInput').value.trim();
+      if (!prompt) {
+        alert('请输入分析需求');
+        return;
+      }
+
+      // 清空之前的结果
+      clearResults();
+
+      // 禁用按钮
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('startBtn').innerHTML = '分析中... <span class="spinner"></span>';
+
+      // 关闭之前的连接
+      if (eventSource) {
+        eventSource.close();
+      }
+
+      // 创建 SSE 连接
+      const url = `/api/v1/analysis/v2/stream?prompt=${encodeURIComponent(prompt)}`;
+      console.log('连接到:', url);
+
+      eventSource = new EventSource(url);
+
+      eventSource.addEventListener('message', (e) => {
+        try {
+          const event = JSON.parse(e.data);
+          console.log('收到事件:', event.type, event);
+
+          switch (event.type) {
+            case 'node_start':
+              createNodeElement(event.node, event.title);
+              updateNodeStatus(event.node, 'running');
+              break;
+
+            case 'reasoning':
+              appendReasoning(event.node, event.data);
+              break;
+
+            case 'node_complete':
+              updateNodeStatus(event.node, 'completed');
+              if (event.data.display_text) {
+                showNodeResult(event.node, event.data.display_text);
+              }
+              break;
+
+            case 'workflow_complete':
+              showFinalResult(event.data);
+              finishAnalysis();
+              break;
+
+            case 'error':
+              showError(event.data);
+              finishAnalysis();
+              break;
+          }
+        } catch (error) {
+          console.error('处理事件失败:', error);
+        }
+      });
+
+      eventSource.onerror = (error) => {
+        console.error('SSE 连接错误:', error);
+        showError('连接到服务器失败，请确保后端服务正在运行');
+        finishAnalysis();
+      };
+    }
+
+    function finishAnalysis() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('startBtn').textContent = '开始分析';
+    }
+
+    function clearResults() {
+      document.getElementById('results').innerHTML = '';
+      Object.keys(nodes).forEach(key => delete nodes[key]);
+    }
+
+    function createNodeElement(nodeId, title) {
+      const nodeDiv = document.createElement('div');
+      nodeDiv.id = `node-${nodeId}`;
+      nodeDiv.className = 'node';
+      nodeDiv.innerHTML = `
+        <div class="node-title">
+          <span class="status-indicator"></span>
+          <span>${title}</span>
+        </div>
+        <div class="node-result" id="result-${nodeId}" style="display:none;"></div>
+        <details id="reasoning-container-${nodeId}" style="display:none;">
+          <summary>🔍 查看 LLM 推理过程</summary>
+          <pre class="reasoning" id="reasoning-${nodeId}"></pre>
+        </details>
+      `;
+      document.getElementById('results').appendChild(nodeDiv);
+      nodes[nodeId] = { element: nodeDiv };
+    }
+
+    function updateNodeStatus(nodeId, status) {
+      const nodeElement = document.getElementById(`node-${nodeId}`);
+      if (nodeElement) {
+        nodeElement.className = `node ${status}`;
+      }
+    }
+
+    function appendReasoning(nodeId, text) {
+      const reasoningElement = document.getElementById(`reasoning-${nodeId}`);
+      const containerElement = document.getElementById(`reasoning-container-${nodeId}`);
+
+      if (reasoningElement && containerElement) {
+        reasoningElement.textContent += text;
+        containerElement.style.display = 'block';
+
+        // 自动滚动到底部
+        reasoningElement.scrollTop = reasoningElement.scrollHeight;
+      }
+    }
+
+    function showNodeResult(nodeId, displayText) {
+      const resultElement = document.getElementById(`result-${nodeId}`);
+      if (resultElement) {
+        resultElement.style.display = 'block';
+        resultElement.textContent = displayText;
+      }
+    }
+
+    function showFinalResult(data) {
+      const finalDiv = document.createElement('div');
+      finalDiv.className = 'final-result';
+
+      let html = '<h2>✓ 分析完成</h2>';
+
+      if (data.prediction_result) {
+        const pr = data.prediction_result;
+        html += '<div class="metrics">';
+        html += `
+          <div class="metric-card">
+            <div class="metric-label">圈选人数</div>
+            <div class="metric-value">${pr.audience_size}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">预估转化率</div>
+            <div class="metric-value">${(pr.conversion_rate * 100).toFixed(2)}%</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">预估收入</div>
+            <div class="metric-value">¥${pr.estimated_revenue.toLocaleString()}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">ROI</div>
+            <div class="metric-value">${pr.roi.toFixed(2)}x</div>
+          </div>
+        `;
+        html += '</div>';
+      }
+
+      finalDiv.innerHTML = html;
+      document.getElementById('results').appendChild(finalDiv);
+    }
+
+    function showError(message) {
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'error';
+      errorDiv.textContent = '❌ 错误: ' + message;
+      document.getElementById('results').appendChild(errorDiv);
+    }
+  </script>
+</body>
+</html>

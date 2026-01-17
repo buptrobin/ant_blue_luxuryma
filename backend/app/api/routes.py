@@ -19,6 +19,12 @@ from app.api.schemas import (
     SessionResponse,
     CampaignApplicationRequest,
     CampaignApplicationResponse,
+    # New V2 schemas
+    AnalysisResponseV2,
+    MatchedFeature as MatchedFeatureSchema,
+    UserIntent as UserIntentSchema,
+    PredictionResult as PredictionResultSchema,
+    TopUser as TopUserSchema,
 )
 from app.agent.graph import get_agent_graph
 from app.data.selectors import AudienceSelector
@@ -196,6 +202,9 @@ async def analyze_marketing_goal_stream(
 
     async def event_generator() -> AsyncIterator[str]:
         """Generate SSE events for thinking steps and final result."""
+        import asyncio
+        import sys
+
         try:
             # Get or create session
             session_manager = get_session_manager()
@@ -237,6 +246,10 @@ async def analyze_marketing_goal_stream(
             for step in initial_steps:
                 yield f"event: thinking_step\n"
                 yield f"data: {json.dumps(step, ensure_ascii=False)}\n\n"
+                # 发送填充数据确保立即发送
+                yield ": ping\n\n"
+                sys.stdout.flush()
+                await asyncio.sleep(0)
 
             logger.info("Sent initial thinking steps framework to frontend")
 
@@ -245,6 +258,54 @@ async def analyze_marketing_goal_stream(
                 # Output format: {node_name: node_output_state}
                 for node_name, node_output in output.items():
                     logger.info(f"Node '{node_name}' completed, streaming updated thinking step")
+
+                    # 🔥 调试：打印 node_output 的键
+                    logger.info(f"Node '{node_name}' output keys: {list(node_output.keys())}")
+
+                    # 发送节点完成的自然语言摘要（新增）
+                    summary_text = None
+                    if node_name == "intent_recognition" and "intent_summary" in node_output:
+                        summary_text = f"✓ 意图识别完成\n\n{node_output['intent_summary']}"
+                        logger.info(f"Found intent_summary: {node_output['intent_summary'][:50]}...")
+                    elif node_name == "feature_matching" and "feature_summary" in node_output:
+                        summary_text = f"✓ 特征匹配完成\n\n{node_output['feature_summary']}"
+                        logger.info(f"Found feature_summary: {node_output['feature_summary'][:50]}...")
+                    elif node_name == "strategy_generation" and "strategy_summary" in node_output:
+                        summary_text = f"✓ 策略生成完成\n\n{node_output['strategy_summary']}"
+                        logger.info(f"Found strategy_summary: {node_output['strategy_summary'][:50]}...")
+
+                    # 如果有自然语言摘要，发送给前端
+                    if summary_text:
+                        summary_event = {
+                            "node": node_name,
+                            "summary": summary_text
+                        }
+                        yield f"event: node_summary\n"
+                        yield f"data: {json.dumps(summary_event, ensure_ascii=False)}\n\n"
+                        # 🔥 发送 SSE 注释行强制刷新（关键！）
+                        yield f": heartbeat\n\n"
+                        sys.stdout.flush()
+                        await asyncio.sleep(0)
+                        logger.info(f"Sent node summary for {node_name}")
+
+                    # 🔥 新增：即使没有 summary，也要发送节点完成事件（关键！）
+                    # 这确保每个节点完成后前端都能立即收到通知
+                    node_complete_event = {
+                        "node": node_name,
+                        "status": "completed",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    yield f"event: node_complete\n"
+                    yield f"data: {json.dumps(node_complete_event, ensure_ascii=False)}\n\n"
+
+                    # 🔥 发送 SSE 注释行强制刷新 HTTP chunk（最关键！）
+                    # 发送足够大的填充数据（~1KB）来触发 HTTP chunk 发送
+                    padding = ": " + (" " * 1000) + "\n\n"
+                    yield padding
+                    sys.stdout.flush()
+                    await asyncio.sleep(0)
+
+                    logger.info(f"[REALTIME] Sent node_complete event for {node_name}")
 
                     # Get thinking steps from current node output
                     thinking_steps = node_output.get("thinking_steps", [])
@@ -262,6 +323,9 @@ async def analyze_marketing_goal_stream(
                         }
                         yield f"event: thinking_step_update\n"  # Different event type for update
                         yield f"data: {json.dumps(step_event, ensure_ascii=False)}\n\n"
+                        yield ": ping\n\n"
+                        sys.stdout.flush()
+                        await asyncio.sleep(0)
 
                     # Save the latest state
                     final_state = node_output
@@ -336,9 +400,10 @@ async def analyze_marketing_goal_stream(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+            "Content-Encoding": "none",  # 禁用压缩
         }
     )
 
@@ -647,3 +712,277 @@ async def apply_campaign(request: CampaignApplicationRequest) -> CampaignApplica
         mock_payload=mock_payload,
         timestamp=datetime.now()
     )
+
+
+# =====================================================
+# New V2 Endpoints - Refactored Workflow
+# =====================================================
+
+@router.post("/analysis/v2", response_model=AnalysisResponseV2)
+async def analyze_marketing_goal_v2(
+    request: AnalysisRequest,
+) -> AnalysisResponseV2:
+    """
+    Analyze marketing goal with refactored multi-turn dialogue workflow.
+
+    新的工作流支持：
+    1. 意图识别 -> 如果不明确，返回澄清问题
+    2. 特征匹配 -> 如果无法匹配，返回修正建议
+    3. 策略生成 -> 效果预测 -> 最终分析
+
+    Args:
+        request: AnalysisRequest containing the marketing goal prompt and optional session_id
+
+    Returns:
+        AnalysisResponseV2 with status and appropriate response
+    """
+    logger.info(f"[V2] Received analysis request: {request.prompt}")
+
+    if not request.prompt or not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    try:
+        # Get or create session
+        session_manager = get_session_manager()
+        session = session_manager.get_or_create_session(request.session_id)
+
+        logger.info(f"[V2] Using session: {session.session_id}")
+
+        # Get conversation history as messages
+        conversation_history = []
+        for turn in session.turns:
+            conversation_history.append({"role": "user", "content": turn.user_input})
+            conversation_history.append({"role": "assistant", "content": turn.response})
+
+        # Run the agent graph with new workflow
+        from app.agent.graph import run_agent
+        final_state = await run_agent(request.prompt, conversation_history)
+
+        # Determine response status based on final_state
+        final_response = final_state.get("final_response", "")
+        intent_status = final_state.get("intent_status")
+        match_status = final_state.get("match_status")
+
+        # Check which path the workflow took
+        if final_state.get("clarification_question"):
+            # Path 1: Intent was ambiguous, need clarification
+            status = "clarification_needed"
+            response_text = final_state.get("clarification_question", final_response)
+
+            response = AnalysisResponseV2(
+                session_id=session.session_id,
+                status=status,
+                response=response_text,
+                timestamp=datetime.now()
+            )
+
+        elif final_state.get("modification_request"):
+            # Path 2: Feature matching failed, need modification
+            status = "modification_needed"
+            response_text = final_state.get("modification_request", final_response)
+
+            response = AnalysisResponseV2(
+                session_id=session.session_id,
+                status=status,
+                response=response_text,
+                user_intent=final_state.get("user_intent"),
+                timestamp=datetime.now()
+            )
+
+        else:
+            # Path 3: Success - full analysis completed
+            status = "success"
+
+            # Extract all results
+            user_intent_dict = final_state.get("user_intent", {})
+            matched_features_list = final_state.get("matched_features", [])
+            strategy_explanation = final_state.get("strategy_explanation", "")
+            prediction_result_dict = final_state.get("prediction_result", {})
+
+            # Convert to Pydantic models
+            user_intent = UserIntentSchema(**user_intent_dict) if user_intent_dict else None
+
+            matched_features = [
+                MatchedFeatureSchema(**feat)
+                for feat in matched_features_list
+            ] if matched_features_list else None
+
+            # Convert prediction_result
+            if prediction_result_dict:
+                # Convert top_users
+                top_users_dicts = prediction_result_dict.get("top_users", [])
+                top_users = [TopUserSchema(**u) for u in top_users_dicts]
+
+                prediction_result = PredictionResultSchema(
+                    audience_size=prediction_result_dict.get("audience_size", 0),
+                    conversion_rate=prediction_result_dict.get("conversion_rate", 0),
+                    estimated_revenue=prediction_result_dict.get("estimated_revenue", 0),
+                    roi=prediction_result_dict.get("roi", 0),
+                    quality_score=prediction_result_dict.get("quality_score", 0),
+                    tier_distribution=prediction_result_dict.get("tier_distribution", {}),
+                    top_users=top_users
+                )
+            else:
+                prediction_result = None
+
+            response = AnalysisResponseV2(
+                session_id=session.session_id,
+                status=status,
+                response=final_response,
+                user_intent=user_intent,
+                matched_features=matched_features,
+                strategy_explanation=strategy_explanation,
+                prediction_result=prediction_result,
+                timestamp=datetime.now()
+            )
+
+        # Save turn to session
+        turn = ConversationTurn(
+            user_input=request.prompt,
+            intent=final_state.get("user_intent", {}),
+            audience=[],  # V2 doesn't return full audience list in same format
+            metrics=final_state.get("prediction_result", {}),
+            response=final_response
+        )
+        session.add_turn(turn)
+
+        logger.info(
+            f"[V2] Analysis completed for session {session.session_id}. "
+            f"Status: {status}. Turn {len(session.turns)}."
+        )
+        return response
+
+    except Exception as e:
+        logger.error(f"[V2] Error during analysis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.get("/analysis/v2/stream")
+async def analyze_marketing_goal_v2_stream(
+    prompt: str,
+    session_id: str = None
+):
+    """
+    Analyze marketing goal with V2 workflow and streaming step-by-step reasoning.
+
+    这个endpoint使用新的V2工作流，并且流式返回：
+    1. LLM的逐步推理过程（Chain-of-Thought）
+    2. 每个节点的执行状态
+    3. 最终的分析结果
+
+    支持多轮对话，通过 session_id 参数传递。
+
+    SSE事件类型：
+    - node_start: 节点开始执行 {"type": "node_start", "node": "intent_recognition", "title": "意图识别"}
+    - reasoning: LLM推理步骤 {"type": "reasoning", "node": "intent_recognition", "data": "推理文本..."}
+    - node_complete: 节点完成 {"type": "node_complete", "node": "intent_recognition", "data": {...}}
+    - workflow_complete: 工作流完成 {"type": "workflow_complete", "status": "success/clarification_needed/modification_needed", "data": {...}}
+    - error: 错误 {"type": "error", "data": "错误信息"}
+
+    Args:
+        prompt: Marketing goal prompt as query parameter
+        session_id: Optional session ID for multi-turn conversation
+
+    Returns:
+        StreamingResponse with SSE events
+    """
+    logger.info(f"[V2 Stream] Received streaming analysis request: {prompt}")
+
+    async def event_generator() -> AsyncIterator[str]:
+        """Generate SSE events for V2 workflow with reasoning."""
+        try:
+            # Get or create session
+            session_manager = get_session_manager()
+            session = session_manager.get_or_create_session(session_id)
+
+            logger.info(f"[V2 Stream] Using session: {session.session_id}")
+
+            # Get conversation history
+            conversation_history = []
+            for turn in session.turns:
+                conversation_history.append({"role": "user", "content": turn.user_input})
+                conversation_history.append({"role": "assistant", "content": turn.response})
+
+            # Run the V2 workflow with streaming
+            from app.agent.graph import run_agent_stream_v2
+
+            final_state = {}
+            final_response = ""
+            status = "success"
+
+            async for event in run_agent_stream_v2(prompt, conversation_history):
+                # Forward all events to frontend - 立即发送，不缓冲
+                event_data = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield event_data
+
+                # 记录发送的事件
+                event_type = event.get("type")
+                if event_type == "node_complete":
+                    logger.info(f"[V2 Stream] Sent node_complete event for {event.get('node')}")
+                elif event_type == "node_start":
+                    logger.info(f"[V2 Stream] Sent node_start event for {event.get('node')}")
+
+                # Track final state
+                if event["type"] == "node_complete":
+                    node = event.get("node")
+                    data = event.get("data", {})
+                    final_state.update(data)
+
+                    # Check for early exits
+                    if node == "ask_clarification" and data.get("clarification_question"):
+                        status = "clarification_needed"
+                        final_response = data.get("clarification_question", "")
+                    elif node == "request_modification" and data.get("modification_request"):
+                        status = "modification_needed"
+                        final_response = data.get("modification_request", "")
+                    elif node == "final_analysis" and data.get("final_response"):
+                        status = "success"
+                        final_response = data.get("final_response", "")
+
+            # Send workflow completion event
+            completion_event = {
+                "type": "workflow_complete",
+                "status": status,
+                "session_id": session.session_id,
+                "data": {
+                    "response": final_response,
+                    "user_intent": final_state.get("user_intent"),
+                    "matched_features": final_state.get("matched_features"),
+                    "strategy_explanation": final_state.get("strategy_explanation"),
+                    "prediction_result": final_state.get("prediction_result"),
+                }
+            }
+            logger.info(f"[V2 Stream] Sending workflow_complete event")
+            yield f"data: {json.dumps(completion_event, ensure_ascii=False)}\n\n"
+
+            # Save turn to session
+            turn = ConversationTurn(
+                user_input=prompt,
+                intent=final_state.get("user_intent", {}),
+                audience=[],
+                metrics=final_state.get("prediction_result", {}),
+                response=final_response
+            )
+            session.add_turn(turn)
+
+            logger.info(
+                f"[V2 Stream] Workflow completed for session {session.session_id}. "
+                f"Status: {status}. Turn {len(session.turns)}."
+            )
+
+        except Exception as e:
+            logger.error(f"[V2 Stream] Error during streaming: {e}", exc_info=True)
+            error_event = {"type": "error", "data": str(e)}
+            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+            "Content-Encoding": "none",  # 禁用压缩
+        }
+    )
+

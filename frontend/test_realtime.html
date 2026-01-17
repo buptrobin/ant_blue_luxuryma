@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>实时流式测试</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 1000px;
+      margin: 20px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+
+    h1 {
+      color: #4ec9b0;
+      text-align: center;
+    }
+
+    .input-section {
+      margin: 20px 0;
+      padding: 15px;
+      background: #252526;
+      border-radius: 8px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 60px;
+      padding: 10px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+
+    button {
+      padding: 10px 20px;
+      margin-top: 10px;
+      background: #0e639c;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background: #1177bb;
+    }
+
+    button:disabled {
+      background: #3c3c3c;
+      cursor: not-allowed;
+    }
+
+    #log {
+      margin-top: 20px;
+      padding: 15px;
+      background: #252526;
+      border-radius: 8px;
+      max-height: 600px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .log-entry {
+      margin: 5px 0;
+      padding: 5px 10px;
+      border-left: 3px solid transparent;
+    }
+
+    .log-time {
+      color: #858585;
+      margin-right: 10px;
+    }
+
+    .log-connect { color: #4ec9b0; border-color: #4ec9b0; }
+    .log-node-complete { color: #dcdcaa; border-color: #dcdcaa; font-weight: bold; }
+    .log-node-summary { color: #569cd6; border-color: #569cd6; }
+    .log-step-update { color: #ce9178; border-color: #ce9178; }
+    .log-final { color: #4ec9b0; border-color: #4ec9b0; font-weight: bold; }
+    .log-error { color: #f48771; border-color: #f48771; }
+
+    .stats {
+      margin-top: 20px;
+      padding: 15px;
+      background: #264f78;
+      border-radius: 8px;
+      color: white;
+    }
+
+    .stats strong {
+      color: #4ec9b0;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 实时流式输出测试</h1>
+
+  <div class="input-section">
+    <textarea id="promptInput" placeholder="输入测试提示词...">我要提升下单整体转化率</textarea>
+    <button id="startBtn" onclick="startTest()">开始测试</button>
+    <button id="stopBtn" onclick="stopTest()" disabled>停止</button>
+    <button onclick="clearLog()">清空日志</button>
+  </div>
+
+  <div class="stats" id="stats" style="display: none;">
+    <div>总耗时: <strong id="totalTime">0</strong> 秒</div>
+    <div>事件总数: <strong id="eventCount">0</strong></div>
+    <div>节点完成: <strong id="nodeCompleteCount">0</strong> 个</div>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    let eventSource = null;
+    let startTime = null;
+    let lastEventTime = null;
+    let eventCount = 0;
+    let nodeCompleteCount = 0;
+
+    function getTimestamp() {
+      const now = new Date();
+      return now.toTimeString().split(' ')[0] + '.' + now.getMilliseconds().toString().padStart(3, '0');
+    }
+
+    function getInterval() {
+      if (!lastEventTime) {
+        return '(首个事件)';
+      }
+      const now = new Date();
+      const diff = (now - lastEventTime) / 1000;
+      return `(+${diff.toFixed(2)}s)`;
+    }
+
+    function log(message, className = '') {
+      const logDiv = document.getElementById('log');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry ' + className;
+
+      const timestamp = getTimestamp();
+      const interval = getInterval();
+
+      entry.innerHTML = `<span class="log-time">[${timestamp}] ${interval}</span>${message}`;
+      logDiv.appendChild(entry);
+      logDiv.scrollTop = logDiv.scrollHeight;
+
+      lastEventTime = new Date();
+      eventCount++;
+      updateStats();
+    }
+
+    function updateStats() {
+      if (!startTime) return;
+
+      const totalTime = ((new Date() - startTime) / 1000).toFixed(2);
+      document.getElementById('totalTime').textContent = totalTime;
+      document.getElementById('eventCount').textContent = eventCount;
+      document.getElementById('nodeCompleteCount').textContent = nodeCompleteCount;
+      document.getElementById('stats').style.display = 'block';
+    }
+
+    function clearLog() {
+      document.getElementById('log').innerHTML = '';
+      eventCount = 0;
+      nodeCompleteCount = 0;
+      startTime = null;
+      lastEventTime = null;
+      document.getElementById('stats').style.display = 'none';
+    }
+
+    function startTest() {
+      const prompt = document.getElementById('promptInput').value.trim();
+      if (!prompt) {
+        alert('请输入提示词');
+        return;
+      }
+
+      clearLog();
+      startTime = new Date();
+      lastEventTime = startTime;
+
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+
+      const url = `/api/v1/analysis/stream?prompt=${encodeURIComponent(prompt)}`;
+
+      log(`🔗 连接到: ${url}`, 'log-connect');
+
+      eventSource = new EventSource(url);
+
+      eventSource.addEventListener('thinking_step', (e) => {
+        const data = JSON.parse(e.data);
+        log(`📋 thinking_step: ${data.title} (status: ${data.status})`, 'log-step-update');
+      });
+
+      eventSource.addEventListener('thinking_step_update', (e) => {
+        const data = JSON.parse(e.data);
+        log(`✅ thinking_step_update: ${data.title}`, 'log-step-update');
+      });
+
+      eventSource.addEventListener('node_summary', (e) => {
+        const data = JSON.parse(e.data);
+        const summaryPreview = data.summary.substring(0, 80).replace(/\n/g, ' ');
+        log(`📝 node_summary [${data.node}]: ${summaryPreview}...`, 'log-node-summary');
+      });
+
+      // 🔥 监听新增的 node_complete 事件
+      eventSource.addEventListener('node_complete', (e) => {
+        const data = JSON.parse(e.data);
+        nodeCompleteCount++;
+        log(`🎉 NODE_COMPLETE [${data.node}] - 节点完成！`, 'log-node-complete');
+      });
+
+      eventSource.addEventListener('final_result', (e) => {
+        log(`🏁 final_result: 分析完成`, 'log-final');
+        stopTest();
+      });
+
+      eventSource.onerror = (error) => {
+        log(`❌ 连接错误: ${error.type}`, 'log-error');
+        stopTest();
+      };
+    }
+
+    function stopTest() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+      log('🛑 测试结束', 'log-final');
+    }
+  </script>
+</body>
+</html>

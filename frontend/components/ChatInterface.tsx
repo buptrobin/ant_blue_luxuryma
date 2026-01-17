@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import {
   UserOutlined,
   RobotOutlined,
@@ -125,6 +126,27 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
             isThinking: false
           };
           setMessages(prev => [...prev, errorMsg2]);
+        },
+        // 🔥 onNodeComplete callback (新增)
+        (node: string, timestamp: string) => {
+          console.log(`✅ 节点 ${node} 完成于 ${timestamp}`);
+        },
+        // 🔥 onNodeSummary callback (新增) - 显示节点摘要
+        (node: string, summary: string) => {
+          console.log(`📝 节点 ${node} 摘要:`, summary);
+
+          // 🔥 使用 flushSync 强制立即更新 UI（绕过 React 批处理）
+          flushSync(() => {
+            // 立即添加一条消息显示节点摘要
+            const summaryMsg: ChatMessage = {
+              id: `${Date.now()}-${node}`,
+              sender: 'agent',
+              text: summary,
+              timestamp: new Date(),
+              isThinking: false
+            };
+            setMessages(prev => [...prev, summaryMsg]);
+          });
         }
       );
     } catch (error) {

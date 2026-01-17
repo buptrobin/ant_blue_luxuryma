@@ -1,622 +1,660 @@
-"""LangGraph nodes for the marketing agent."""
+"""LangGraph nodes for the marketing agent - Refactored for multi-turn dialogue."""
 import logging
+import json
+import re
 from typing import Any
 
-from app.agent.state import AgentState, ThinkingStep
+from app.agent.state import AgentState, UserIntent, MatchedFeature, PredictionResult
 from app.models.llm import get_llm_manager
-from app.data.selectors import select_audience
-from app.data.mock_users import MOCK_USERS
-from app.utils.metrics import get_calculator
+from app.data.feature_metadata import FEATURE_METADATA, search_features_by_keywords
+from app.data.mock_users import MOCK_USERS_WITH_FEATURES
+from langgraph.types import Send, interrupt
 
 logger = logging.getLogger(__name__)
 
 
-async def intent_analysis_node(state: AgentState) -> dict[str, Any]:
+# =====================================================
+# Node A: intent_recognition (意图识别)
+# =====================================================
+async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
     """
-    Node 1: Analyze user intent and extract marketing goals.
+    Node A: 意图识别
 
-    Parses the user's input to identify:
-    - Primary KPI (conversion rate, revenue, etc.)
-    - Target audience tiers
-    - Behavioral criteria
-    - Constraints and preferences
-
-    Supports multi-turn conversations:
-    - Uses conversation_context to understand history
-    - Detects if user is modifying existing intent
-    - Adjusts intent based on previous state
+    分析用户输入，识别业务目标、目标人群和约束条件。
+    判断意图是否明确，如果不明确则标记为 "ambiguous"。
     """
-    logger.info("Executing intent_analysis_node")
+    logger.info("Executing intent_recognition_node")
 
-    # Update thinking steps
-    thinking_steps = state.get("thinking_steps", [])
-    thinking_steps = [
-        {
-            "id": "1",
-            "title": "业务意图与约束解析",
-            "description": "正在分析营销目标和核心KPI...",
-            "status": "active"
-        }
-    ]
+    user_input = state.get("user_input", "")
+    messages = state.get("messages", [])
 
-    # Get LLM manager and analyze intent
     llm = get_llm_manager()
-    user_input = state["user_input"]
-    conversation_context = state.get("conversation_context", "")
-    is_modification = state.get("is_modification", False)
-    previous_intent = state.get("previous_intent")
 
-    intent = None
+    # 构建提示词
+    prompt = f"""你是一个营销专家，负责分析用户的圈人需求。
+
+用户输入：{user_input}
+
+请分析用户的意图，并返回JSON格式的结果，包含以下字段：
+- business_goal: 业务目标（如 "提升转化率", "扩大客户群", "促进复购"等）
+- target_audience: 目标人群描述（包含会员等级、年龄、性别、消费力等维度）
+- constraints: 约束条件列表（如 "排除近期已购买用户", "预算限制"等）
+- kpi: 核心KPI（conversion_rate/revenue/visit_rate/engagement）
+- size_preference: 人群规模偏好 {{"min": 最小人数, "max": 最大人数}}
+- is_clear: 意图是否明确（true/false）。如果用户描述模糊、缺少关键信息，则为false
+- summary: 用1-2句话总结你对用户意图的理解，例如："您希望提升整体购买转化率，当前没有特定的人群限制条件。"
+
+只返回JSON，不要其他内容。
+
+示例：
+{{
+  "business_goal": "提升春季新品转化率",
+  "target_audience": {{
+    "tier": ["VVIP", "VIP"],
+    "age_group": "25-44",
+    "has_recent_purchase": false
+  }},
+  "constraints": ["排除近7天已购买用户", "预算50万"],
+  "kpi": "conversion_rate",
+  "size_preference": {{"min": 100, "max": 500}},
+  "is_clear": true,
+  "summary": "您希望针对春季新品手袋上市，圈选25-44岁的VVIP和VIP客户，以提升产品转化率。"
+}}
+"""
+
     try:
-        # Use context-aware prompt for multi-turn
-        if conversation_context and is_modification and previous_intent:
-            # User is modifying existing intent - use non-streaming for simplicity
-            prompt_context = f"""你是一个营销专家。用户正在修改现有的营销策略。
+        # 直接调用LLM底层方法（不使用旧的 analyze_intent）
+        response_text = await llm.model.call(prompt)
+        logger.info(f"Intent recognition raw response: {response_text[:200]}...")
 
-{conversation_context}
+        # 尝试解析JSON
+        try:
+            response = json.loads(response_text)
+        except json.JSONDecodeError:
+            # 如果无法解析JSON，尝试提取JSON部分
+            logger.warning("Failed to parse as JSON, trying to extract JSON block")
+            # 尝试提取 {...} 部分
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                response = json.loads(json_match.group())
+            else:
+                raise ValueError("Cannot extract JSON from response")
 
-请分析用户的新输入，并基于当前策略进行**增量调整**。返回调整后的完整策略。
+        logger.info(f"Intent recognition parsed: {response}")
 
-用户的新输入：{user_input}
+        # 解析结果
+        is_clear = response.get("is_clear", True)  # 默认为True，只有明确标记false才认为不清楚
 
-请返回一个JSON格式的结果，包含以下字段：
-- kpi: 核心KPI目标 (conversion_rate/revenue/visit_rate)
-- target_tiers: 目标会员等级 (VVIP/VIP/Member)
-- behavior_filters: 行为筛选条件
-  - browse_frequency: 浏览频次阈值 (0-100)
-  - engagement_level: 参与度级别 (high/medium/low)
-- size_preference: 人群规模偏好
-  - min: 最小规模
-  - max: 最大规模
-- constraints: 额外约束条件列表
+        # 构建 UserIntent
+        user_intent: UserIntent = {
+            "business_goal": response.get("business_goal", ""),
+            "target_audience": response.get("target_audience", {}),
+            "constraints": response.get("constraints", []),
+            "kpi": response.get("kpi", "conversion_rate"),
+            "size_preference": response.get("size_preference", {"min": 50, "max": 500}),
+        }
 
-只返回JSON，不要其他内容。"""
+        # 提取自然语言摘要
+        summary = response.get("summary", "")
+        if not summary:
+            # 如果LLM没有返回summary，生成一个简单的
+            goal = user_intent.get("business_goal", "营销活动")
+            summary = f"理解您的需求：{goal}"
 
-            intent = await llm.analyze_intent(prompt_context)
-            logger.info(f"Modified intent based on context: {intent}")
+        logger.info(f"Intent summary: {summary}")
 
-        else:
-            # Fresh analysis - use streaming for faster first token
-            logger.info("Using streaming LLM call for intent analysis")
-            chunk_count = 0
-            async for event in llm.analyze_intent_stream(user_input):
-                if event["type"] == "chunk":
-                    chunk_count += 1
-                    if chunk_count == 1:
-                        logger.info(f"✅ First token received! Streaming in progress...")
-                    # Log every 20 chunks to show progress
-                    if chunk_count % 20 == 0:
-                        logger.info(f"  Received {chunk_count} tokens...")
-                elif event["type"] == "complete":
-                    intent = event["data"]
-                    logger.info(f"Extracted fresh intent (received {chunk_count} tokens total)")
-                    logger.info(f"[DEBUG] Intent content: {intent}")  # Debug log
-                    break
-                elif event["type"] == "error":
-                    raise Exception(event["data"])
+        return {
+            "user_intent": user_intent,
+            "intent_status": "clear" if is_clear else "ambiguous",
+            "intent_summary": summary,  # 新增：自然语言摘要
+        }
 
     except Exception as e:
-        logger.error(f"Error analyzing intent: {e}")
-        intent = None
-
-    # Fallback to default or previous intent if needed
-    if intent is None:
-        if previous_intent:
-            intent = previous_intent
-        else:
-            intent = {
+        logger.error(f"Error in intent_recognition: {e}")
+        # 默认返回不明确状态
+        return {
+            "user_intent": {
+                "business_goal": "",
+                "target_audience": {},
+                "constraints": [],
                 "kpi": "conversion_rate",
-                "target_tiers": ["VVIP", "VIP"],
-                "behavior_filters": {},
                 "size_preference": {"min": 50, "max": 500},
-                "constraints": []
-            }
-
-    # Mark step as completed with detailed description
-    kpi = intent.get('kpi', 'N/A')
-    target_tiers = intent.get('target_tiers', [])
-    behavior_filters = intent.get('behavior_filters', {})
-    size_pref = intent.get('size_preference', {})
-    constraints = intent.get('constraints', [])
-
-    # Build detailed natural language description
-    description_parts = []
-
-    # KPI目标
-    kpi_map = {
-        'conversion_rate': '转化率（CVR）',
-        'revenue': '营收增长',
-        'visit_rate': '到店率',
-        'engagement': '互动参与度'
-    }
-    description_parts.append(f"**核心KPI目标**: {kpi_map.get(kpi, kpi)}")
-
-    # 目标人群等级
-    if target_tiers:
-        # Filter out None values
-        target_tiers_filtered = [t for t in target_tiers if t is not None]
-        if target_tiers_filtered:
-            tier_desc = "、".join(target_tiers_filtered)
-            description_parts.append(f"**目标客户等级**: {tier_desc}")
-
-    # 行为筛选条件
-    if behavior_filters:
-        behavior_desc = []
-        browse_freq = behavior_filters.get('browse_frequency')
-        if browse_freq is not None:
-            behavior_desc.append(f"浏览频次≥{browse_freq}")
-
-        engagement = behavior_filters.get('engagement_level')
-        if engagement is not None:
-            level_map = {'high': '高', 'medium': '中', 'low': '低'}
-            level_val = level_map.get(engagement, engagement)
-            behavior_desc.append(f"参与度{level_val}")
-
-        # Filter out None values before joining
-        behavior_desc = [b for b in behavior_desc if b is not None]
-        if behavior_desc:
-            description_parts.append(f"**行为要求**: {', '.join(behavior_desc)}")
-
-    # 人群规模偏好
-    if size_pref:
-        min_size = size_pref.get('min', 0)
-        max_size = size_pref.get('max', 0)
-        if min_size or max_size:
-            description_parts.append(f"**人群规模**: {min_size}-{max_size}人")
-
-    # 额外约束
-    if constraints:
-        # Filter out None values
-        constraints_filtered = [c for c in constraints if c is not None]
-        if constraints_filtered:
-            description_parts.append(f"**约束条件**: {', '.join(constraints_filtered)}")
-
-    # 是否是修改意图
-    if is_modification:
-        description_parts.insert(0, "🔄 **检测到意图修改** - 基于上一轮结果进行增量调整")
-
-    thinking_steps[0]["description"] = "\n".join(description_parts)
-    thinking_steps[0]["status"] = "completed"
-
-    return {
-        "intent": intent,
-        "thinking_steps": thinking_steps
-    }
+            },
+            "intent_status": "ambiguous",
+        }
 
 
-async def feature_extraction_node(state: AgentState) -> dict[str, Any]:
+# =====================================================
+# Node B: ask_clarification (澄清/反问)
+# =====================================================
+async def ask_clarification_node(state: AgentState) -> dict[str, Any]:
     """
-    Node 2: Extract multi-dimensional features for audience segmentation.
+    Node B: 澄清/反问
 
-    Based on the identified intent, generates:
-    - Filtering rules for different user dimensions
-    - Feature weights and importance
-    - Business logic explanations
+    当意图不明时，生成自然语言引导用户继续补充信息。
     """
-    logger.info("Executing feature_extraction_node")
+    logger.info("Executing ask_clarification_node")
 
-    thinking_steps = state.get("thinking_steps", [])
-    intent = state.get("intent", {})
-
-    # Add second thinking step
-    thinking_steps.append({
-        "id": "2",
-        "title": "多维特征扫描",
-        "description": "正在提取人群的消费力、兴趣、活跃度等特征...",
-        "status": "active"
-    })
+    user_input = state.get("user_input", "")
+    user_intent = state.get("user_intent", {})
 
     llm = get_llm_manager()
 
-    features = None
-    try:
-        # Use streaming for faster first token
-        logger.info("Using streaming LLM call for feature extraction")
-        chunk_count = 0
-        async for event in llm.extract_features_stream(intent):
-            if event["type"] == "chunk":
-                chunk_count += 1
-                if chunk_count == 1:
-                    logger.info(f"✅ First token received! Streaming in progress...")
-                if chunk_count % 20 == 0:
-                    logger.info(f"  Received {chunk_count} tokens...")
-            elif event["type"] == "complete":
-                features = event["data"]
-                logger.info(f"Extracted features (received {chunk_count} tokens total)")
-                break
-            elif event["type"] == "error":
-                raise Exception(event["data"])
-    except Exception as e:
-        logger.error(f"Error extracting features: {e}")
-        features = None
+    # 构建提示词
+    prompt = f"""你是一个营销专家助手。用户的描述不够清晰，你需要引导用户补充更多信息。
 
-    # Fallback if needed
-    if features is None:
-        features = {
-            "feature_rules": [],
-            "weights": {},
-            "explanation": "基于会员等级和行为特征的多维筛选"
+用户输入：{user_input}
+当前识别的意图：{json.dumps(user_intent, ensure_ascii=False)}
+
+请生成一个自然语言的反问，引导用户补充以下信息：
+1. 业务目标是什么？（如提升转化、增加营收、促进到店等）
+2. 想圈选哪类人群？（会员等级、年龄段、消费力等）
+3. 有什么约束条件？（人群规模、预算、排除条件等）
+
+返回一段自然、友好的引导语，不要生成JSON。
+
+示例：
+"我理解您想进行人群圈选。为了更精准地帮您，能否告诉我：您的核心目标是什么？比如是提升转化率、增加营收，还是促进到店？另外，您希望圈选哪类客户？比如VIP客户、年轻客户、高消费客户等？"
+"""
+
+    try:
+        # 直接调用LLM
+        response = await llm.model.call(prompt)
+        clarification = response.strip()
+
+        logger.info(f"Clarification question: {clarification}")
+
+        return {
+            "clarification_question": clarification,
+            "final_response": clarification,  # 直接返回给用户
         }
 
-    # Build detailed natural language description
-    description_parts = []
-
-    # 特征维度说明
-    target_tiers = intent.get('target_tiers', [])
-    if target_tiers:
-        # Filter out None values
-        target_tiers_filtered = [t for t in target_tiers if t is not None]
-        if target_tiers_filtered:
-            description_parts.append(f"**会员等级筛选**: 定位{', '.join(target_tiers_filtered)}客户群体")
-
-    # 行为特征
-    behavior_filters = intent.get('behavior_filters', {})
-    if behavior_filters:
-        behavior_features = []
-        browse_freq = behavior_filters.get('browse_frequency')
-        if browse_freq is not None:
-            behavior_features.append(f"高频浏览用户（阈值{browse_freq}）")
-
-        engagement = behavior_filters.get('engagement_level')
-        if engagement is not None:
-            level_desc = {'high': '高度活跃', 'medium': '中度活跃', 'low': '低活跃度'}
-            desc = level_desc.get(engagement, f'{engagement}活跃度')
-            behavior_features.append(desc)
-
-        # Filter out None values before joining
-        behavior_features = [f for f in behavior_features if f is not None]
-        if behavior_features:
-            description_parts.append(f"**行为特征**: {', '.join(behavior_features)}")
-
-    # 消费力分析
-    kpi = intent.get('kpi', '')
-    if kpi == 'revenue':
-        description_parts.append("**消费力**: 优先圈选高客单价、复购率高的用户")
-    elif kpi == 'conversion_rate':
-        description_parts.append("**转化倾向**: 优先圈选高意向、浏览深度高的用户")
-    elif kpi == 'visit_rate':
-        description_parts.append("**到店意愿**: 优先圈选近期活跃、地理位置匹配的用户")
-
-    # 特征权重说明
-    weights = features.get('weights', {})
-    if weights:
-        weight_items = []
-        for key, val in weights.items():
-            if key is not None and val is not None:
-                weight_items.append(f"{key}({val})")
-        if weight_items:
-            description_parts.append(f"**特征权重**: {', '.join(weight_items)}")
-
-    # LLM生成的说明
-    explanation = features.get('explanation', '')
-    if explanation:
-        description_parts.append(f"**策略说明**: {explanation}")
-
-    # Mark step as completed
-    thinking_steps[-1]["description"] = "\n".join(description_parts) if description_parts else "已完成多维特征提取"
-    thinking_steps[-1]["status"] = "completed"
-
-    return {
-        "features": features,
-        "thinking_steps": thinking_steps
-    }
+    except Exception as e:
+        logger.error(f"Error in ask_clarification: {e}")
+        return {
+            "clarification_question": "请问您想圈选什么样的人群？能否提供更多细节？",
+            "final_response": "请问您想圈选什么样的人群？能否提供更多细节？",
+        }
 
 
-async def audience_selection_node(state: AgentState) -> dict[str, Any]:
+# =====================================================
+# Node C: feature_matching (特征匹配)
+# =====================================================
+async def feature_matching_node(state: AgentState) -> dict[str, Any]:
     """
-    Node 3: Select audience based on intent and features.
+    Node C: 特征匹配
 
-    Applies filtering rules to the user pool:
-    - Filters by membership tier
-    - Applies behavior criteria
-    - Calculates match scores
-    - Returns ranked audience list
+    将用户意图映射到具体的数据库特征字段。
     """
-    logger.info("Executing audience_selection_node")
+    logger.info("Executing feature_matching_node")
 
-    thinking_steps = state.get("thinking_steps", [])
-    intent = state.get("intent", {})
+    user_intent = state.get("user_intent", {})
 
-    # Add third thinking step
-    thinking_steps.append({
-        "id": "3",
-        "title": "人群策略组合计算",
-        "description": "正在应用筛选规则并计算人群策略...",
-        "status": "active"
-    })
+    llm = get_llm_manager()
+
+    # 准备特征元数据摘要
+    feature_summary = {}
+    for name, meta in FEATURE_METADATA.items():
+        feature_summary[name] = {
+            "display_name": meta["display_name"],
+            "type": meta["type"],
+            "description": meta["description"],
+            "examples": meta["examples"][:2],  # 只取前2个示例
+        }
+
+    # 构建提示词
+    prompt = f"""你是一个数据分析专家。用户想进行人群圈选，你需要将用户意图映射到具体的数据库特征字段。
+
+用户意图：
+{json.dumps(user_intent, ensure_ascii=False, indent=2)}
+
+可用的特征字段：
+{json.dumps(feature_summary, ensure_ascii=False, indent=2)}
+
+请分析用户意图，匹配合适的特征字段，返回JSON格式：
+{{
+  "matched_features": [
+    {{
+      "feature_name": "特征名称",
+      "operator": "操作符（>、>=、<、<=、==、in、between）",
+      "value": "特征值",
+      "description": "自然语言描述"
+    }}
+  ],
+  "is_success": true/false,  # 是否成功匹配
+  "reason": "如果失败，说明原因"
+}}
+
+注意：
+1. 如果用户意图中的某些条件无法用现有特征表达，设置 is_success=false
+2. 尽量匹配多个特征，组合使用以满足用户需求
+3. 对于年龄、会员等级等分类特征，使用 "in" 操作符
+4. 对于消费额、次数等数值特征，使用 >、>=、< 等操作符
+
+只返回JSON，不要其他内容。
+"""
 
     try:
-        # Select audience based on intent
-        selected_users, metadata = select_audience(intent, MOCK_USERS)
-        logger.info(f"Selected {len(selected_users)} users. Metadata: {metadata}")
-    except Exception as e:
-        logger.error(f"Error selecting audience: {e}")
-        selected_users = []
-        metadata = {}
+        # 直接调用LLM进行特征匹配
+        response_text = await llm.model.call(prompt)
+        logger.info(f"Feature matching raw response: {response_text[:200]}...")
 
-    # Build detailed natural language description
-    description_parts = []
+        # 解析JSON
+        try:
+            response = json.loads(response_text)
+        except json.JSONDecodeError:
+            # 尝试提取JSON部分
+            logger.warning("Failed to parse as JSON, trying to extract JSON block")
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                response = json.loads(json_match.group())
+            else:
+                raise ValueError("Cannot extract JSON from response")
 
-    # 圈选结果概览
-    total_selected = len(selected_users)
-    description_parts.append(f"✅ **圈选完成**: 从全量用户中筛选出 **{total_selected}人** 高潜人群")
+        logger.info(f"Feature matching result: {response}")
 
-    # 会员等级分布
-    tier_distribution = {}
-    for user in selected_users:
-        tier = user.get("tier", "Member")
-        tier_distribution[tier] = tier_distribution.get(tier, 0) + 1
+        is_success = response.get("is_success", True)  # 默认成功
+        matched_features_raw = response.get("matched_features", [])
 
-    if tier_distribution:
-        tier_desc = []
-        tier_order = ["VVIP", "VIP", "Member"]
-        for tier in tier_order:
-            if tier in tier_distribution:
-                count = tier_distribution[tier]
-                percentage = (count / total_selected * 100) if total_selected > 0 else 0
-                tier_desc.append(f"{tier} {count}人({percentage:.0f}%)")
-        if tier_desc:
-            description_parts.append(f"**会员分布**: {' | '.join(tier_desc)}")
+        # 转换为 MatchedFeature 类型
+        matched_features: list[MatchedFeature] = []
+        for feat in matched_features_raw:
+            # 获取特征元数据
+            meta = FEATURE_METADATA.get(feat.get("feature_name"))
+            if meta:
+                matched_features.append({
+                    "feature_name": feat.get("feature_name", ""),
+                    "feature_type": meta["type"],
+                    "operator": feat.get("operator", "=="),
+                    "value": feat.get("value"),
+                    "description": feat.get("description", ""),
+                })
 
-    # 平均匹配度
-    if selected_users:
-        avg_match_score = sum(u.get("matchScore", 0) for u in selected_users) / len(selected_users)
-        description_parts.append(f"**平均匹配度**: {avg_match_score:.1f}分")
-
-    # Top 3用户预览
-    if selected_users:
-        top_3 = selected_users[:3]
-        top_users_desc = []
-        for i, user in enumerate(top_3, 1):
-            name = user.get("name", "未知")
-            tier = user.get("tier", "Member")
-            score = user.get("score", 0)
-            match_score = user.get("matchScore", 0)
-            top_users_desc.append(f"{i}. {name}({tier}, 基础{score}分, 匹配{match_score:.1f}分)")
-
-        description_parts.append(f"**Top 3用户**:\n" + "\n".join(top_users_desc))
-
-    # 筛选策略说明
-    target_tiers = intent.get('target_tiers', [])
-    if target_tiers:
-        # Filter out None values
-        target_tiers_filtered = [t for t in target_tiers if t is not None]
-        if target_tiers_filtered:
-            description_parts.append(f"**筛选策略**: 定位{'/'.join(target_tiers_filtered)}等级，匹配度加权排序")
-
-    # 数据质量评估
-    if total_selected > 0:
-        if total_selected < 10:
-            description_parts.append("⚠️ **建议**: 当前人群规模较小，可考虑放宽筛选条件扩大覆盖")
-        elif total_selected > 200:
-            description_parts.append("💡 **建议**: 人群规模较大，可进一步提升筛选精准度")
+        # 生成自然语言摘要
+        if matched_features:
+            feature_list = "\n".join([f"• {f['description']}" for f in matched_features[:5]])
+            summary = f"已为您匹配{len(matched_features)}个关键特征：\n{feature_list}"
         else:
-            description_parts.append("✨ **评估**: 人群规模合理，匹配度良好")
+            summary = "未能找到匹配的特征字段，建议调整需求描述。"
 
-    # Mark step as completed
-    thinking_steps[-1]["description"] = "\n".join(description_parts) if description_parts else f"已圈选{total_selected}人"
-    thinking_steps[-1]["status"] = "completed"
-
-    return {
-        "audience": selected_users,
-        "thinking_steps": thinking_steps
-    }
-
-
-async def prediction_optimization_node(state: AgentState) -> dict[str, Any]:
-    """
-    Node 4: Predict campaign performance and optimize.
-
-    Calculates key metrics:
-    - Conversion rate based on audience size and quality
-    - Estimated revenue
-    - ROI
-    - Audience quality score
-    """
-    logger.info("Executing prediction_optimization_node")
-
-    thinking_steps = state.get("thinking_steps", [])
-    audience = state.get("audience", [])
-
-    # Add fourth thinking step
-    thinking_steps.append({
-        "id": "4",
-        "title": "效果预测与优化",
-        "description": "正在计算转化率、ROI等核心指标...",
-        "status": "active"
-    })
-
-    # Calculate metrics
-    calculator = get_calculator()
-    audience_size = len(audience)
-    avg_score = sum(u.get("matchScore", 0) for u in audience) / audience_size if audience else 0
-
-    # Count tier distribution
-    tier_distribution = {"VVIP": 0, "VIP": 0, "Member": 0}
-    for user in audience:
-        tier = user.get("tier", "Member")
-        if tier in tier_distribution:
-            tier_distribution[tier] += 1
-
-    try:
-        metrics = calculator.estimate_metrics(
-            audience_size=audience_size,
-            avg_user_score=avg_score,
-            audience_tier_distribution=tier_distribution
-        )
-        logger.info(f"Calculated metrics: {metrics}")
-    except Exception as e:
-        logger.error(f"Error calculating metrics: {e}")
-        metrics = {
-            "audience_size": audience_size,
-            "conversion_rate": 0,
-            "estimated_revenue": 0,
-            "roi": 0,
-            "reach_rate": 0,
-            "quality_score": 0
+        return {
+            "matched_features": matched_features,
+            "match_status": "success" if is_success else "needs_refinement",
+            "feature_summary": summary,  # 新增：自然语言摘要
         }
 
-    # Build detailed natural language description
-    description_parts = []
-
-    # 核心指标预测
-    description_parts.append("📊 **核心指标预测**")
-
-    # 转化率
-    conversion_rate = metrics.get("conversion_rate", 0)
-    description_parts.append(f"• **预估转化率**: {conversion_rate:.2%}")
-    if conversion_rate > 0.10:
-        description_parts.append("  ✨ 转化率表现优秀")
-    elif conversion_rate > 0.05:
-        description_parts.append("  ✓ 转化率表现良好")
-    else:
-        description_parts.append("  ⚠️ 转化率偏低，建议优化人群质量")
-
-    # 预估收入
-    estimated_revenue = metrics.get("estimated_revenue", 0)
-    description_parts.append(f"• **预估收入**: ¥{estimated_revenue:,.0f}")
-
-    # ROI
-    roi = metrics.get("roi", 0)
-    description_parts.append(f"• **投资回报率(ROI)**: {roi:.2f}倍")
-    if roi > 5:
-        description_parts.append("  🎯 ROI表现优异，建议立即执行")
-    elif roi > 3:
-        description_parts.append("  ✓ ROI达标，可以执行")
-    else:
-        description_parts.append("  ⚠️ ROI偏低，建议优化策略")
-
-    # 触达率
-    reach_rate = metrics.get("reach_rate", 0)
-    description_parts.append(f"• **触达率**: {reach_rate:.1f}%")
-
-    # 人群质量分
-    quality_score = metrics.get("quality_score", 0)
-    description_parts.append(f"• **人群质量分**: {quality_score:.1f}分")
-
-    # 人群规模分析
-    description_parts.append(f"\n📈 **人群规模分析**")
-    description_parts.append(f"• 目标人群: {audience_size}人")
-
-    # 各等级预估收入
-    if tier_distribution:
-        from app.data.mock_users import TIER_AVG_ORDER_VALUE
-        tier_revenue_parts = []
-        for tier in ["VVIP", "VIP", "Member"]:
-            count = tier_distribution.get(tier, 0)
-            if count > 0:
-                avg_order = TIER_AVG_ORDER_VALUE.get(tier, 18000)
-                tier_revenue = count * conversion_rate * avg_order
-                tier_revenue_parts.append(f"  • {tier}: {count}人 × {conversion_rate:.1%} × ¥{avg_order:,} = ¥{tier_revenue:,.0f}")
-
-        if tier_revenue_parts:
-            description_parts.append("• 分层收入贡献:")
-            description_parts.extend(tier_revenue_parts)
-
-    # 优化建议
-    description_parts.append(f"\n💡 **优化建议**")
-
-    if audience_size < 50:
-        description_parts.append("• 人群规模偏小，建议适当放宽筛选条件")
-
-    if avg_score < 80:
-        description_parts.append("• 平均匹配度偏低，建议提升特征权重")
-
-    if tier_distribution.get("VVIP", 0) / audience_size > 0.7 if audience_size > 0 else False:
-        description_parts.append("• VVIP占比高，建议增加个性化服务触点")
-
-    if conversion_rate < 0.05:
-        description_parts.append("• 转化率较低，建议优化营销文案和触达渠道")
-
-    # Mark step as completed
-    thinking_steps[-1]["description"] = "\n".join(description_parts)
-    thinking_steps[-1]["status"] = "completed"
-
-    return {
-        "metrics": metrics,
-        "thinking_steps": thinking_steps
-    }
+    except Exception as e:
+        logger.error(f"Error in feature_matching: {e}")
+        return {
+            "matched_features": [],
+            "match_status": "needs_refinement",
+        }
 
 
-async def response_generation_node(state: AgentState) -> dict[str, Any]:
+# =====================================================
+# Node D: request_modification (请求修正)
+# =====================================================
+async def request_modification_node(state: AgentState) -> dict[str, Any]:
     """
-    Node 5: Generate natural language response.
+    Node D: 请求修正
 
-    Creates a human-readable summary of:
-    - Selected audience insights
-    - Key metrics and KPIs
-    - Strategic recommendations
+    当无法找到匹配特征或意图不可执行时，告知用户原因并引导修改。
     """
-    logger.info("Executing response_generation_node")
+    logger.info("Executing request_modification_node")
 
-    thinking_steps = state.get("thinking_steps", [])
-    audience = state.get("audience", [])
-    metrics = state.get("metrics", {})
-    intent = state.get("intent", {})
-
-    # Add fifth thinking step
-    thinking_steps.append({
-        "id": "5",
-        "title": "策略总结与建议",
-        "description": "正在生成营销策略总结...",
-        "status": "active"
-    })
-
-    # Prepare analysis summary
-    analysis_summary = {
-        "audience_size": len(audience),
-        "avg_score": sum(u.get("matchScore", 0) for u in audience) / len(audience) if audience else 0,
-        "conversion_rate": metrics.get("conversion_rate", 0),
-        "estimated_revenue": metrics.get("estimated_revenue", 0),
-        "roi": metrics.get("roi", 0),
-        "reach_rate": metrics.get("reach_rate", 0),
-        "quality_score": metrics.get("quality_score", 0),
-        "kpi": intent.get("kpi", "")
-    }
+    user_intent = state.get("user_intent", {})
+    matched_features = state.get("matched_features", [])
 
     llm = get_llm_manager()
 
-    response = None
+    # 构建提示词
+    prompt = f"""你是一个营销专家助手。用户的圈人需求无法用现有的数据特征满足，你需要告知原因并引导修改。
+
+用户意图：
+{json.dumps(user_intent, ensure_ascii=False, indent=2)}
+
+已匹配的特征：
+{json.dumps(matched_features, ensure_ascii=False, indent=2)}
+
+请生成一段自然、友好的引导语，说明：
+1. 哪些需求无法满足，为什么
+2. 建议用户如何调整需求（简化条件、换个角度描述等）
+
+返回纯文本，不要JSON格式。
+
+示例：
+"抱歉，根据您的描述，我们暂时无法匹配到合适的数据特征。建议您：1) 简化一些条件，比如先不限制地域；2) 或者换个角度，比如关注用户的消费行为而不是兴趣标签。您可以重新描述一下需求吗？"
+"""
+
     try:
-        # Use streaming for faster first token
-        logger.info("Using streaming LLM call for response generation")
-        chunk_count = 0
-        async for event in llm.generate_response_stream(analysis_summary):
-            if event["type"] == "chunk":
-                chunk_count += 1
-                if chunk_count == 1:
-                    logger.info(f"✅ First token received! Streaming in progress...")
-                if chunk_count % 20 == 0:
-                    logger.info(f"  Received {chunk_count} tokens...")
-            elif event["type"] == "complete":
-                response = event["data"]
-                logger.info(f"Generated response (received {chunk_count} tokens total)")
-                break
-            elif event["type"] == "error":
-                raise Exception(event["data"])
+        # 直接调用LLM生成修正建议
+        response = await llm.model.call(prompt)
+        modification_request = response.strip()
+
+        logger.info(f"Modification request: {modification_request}")
+
+        return {
+            "modification_request": modification_request,
+            "final_response": modification_request,  # 直接返回给用户
+        }
+
     except Exception as e:
-        logger.error(f"Error generating response: {e}")
-        response = None
+        logger.error(f"Error in request_modification: {e}")
+        return {
+            "modification_request": "抱歉，无法满足您的需求。请重新描述或简化条件。",
+            "final_response": "抱歉，无法满足您的需求。请重新描述或简化条件。",
+        }
 
-    # Fallback if needed
-    if response is None:
-        response = f"已为您圈选{len(audience)}人高潜人群。预估转化率{metrics.get('conversion_rate', 0):.1%}，预估收入¥{metrics.get('estimated_revenue', 0):,.0f}。"
 
-    # Update thinking step with summary
-    thinking_steps[-1]["description"] = f"✅ 分析完成\n\n{response}"
-    thinking_steps[-1]["status"] = "completed"
+# =====================================================
+# Node E: strategy_generation (策略生成)
+# =====================================================
+async def strategy_generation_node(state: AgentState) -> dict[str, Any]:
+    """
+    Node E: 策略生成
+
+    用自然语言解释如何组合这些特征来满足圈人意图。
+    """
+    logger.info("Executing strategy_generation_node")
+
+    user_intent = state.get("user_intent", {})
+    matched_features = state.get("matched_features", [])
+
+    llm = get_llm_manager()
+
+    # 构建提示词
+    prompt = f"""你是一个营销策略专家。用户想进行人群圈选，你已经匹配好了特征，现在需要生成策略解释。
+
+用户意图：
+{json.dumps(user_intent, ensure_ascii=False, indent=2)}
+
+匹配的特征：
+{json.dumps(matched_features, ensure_ascii=False, indent=2)}
+
+请用自然语言解释：
+1. 我们将如何组合这些特征来圈选人群
+2. 这个策略为什么能满足用户的业务目标
+3. 预期能达到什么效果
+
+返回一段专业、清晰的策略说明（200-300字），不要JSON格式。
+
+示例：
+"根据您的需求，我们将采用以下圈选策略：
+
+**目标人群定位**：锁定VVIP和VIP客户，年龄在25-44岁之间，近12个月消费额超过10万元。
+
+**行为筛选**：优先选择近30天浏览手袋品类超过10次、且有加购未下单记录的高意向用户。
+
+**排除条件**：排除近7天已购买用户，避免营销疲劳。
+
+**预期效果**：这一策略能够精准触达高价值、高意向的潜在客户，预计转化率可提升30-50%，同时避免对已转化用户的重复打扰。"
+"""
+
+    try:
+        # 直接调用LLM生成策略解释
+        response = await llm.model.call(prompt)
+        strategy = response.strip()
+
+        logger.info(f"Strategy explanation: {strategy[:100]}...")
+
+        # 提取前200字作为摘要
+        strategy_summary = strategy[:200] + "..." if len(strategy) > 200 else strategy
+
+        return {
+            "strategy_explanation": strategy,
+            "strategy_summary": strategy_summary,  # 新增：策略摘要
+        }
+
+    except Exception as e:
+        logger.error(f"Error in strategy_generation: {e}")
+        return {
+            "strategy_explanation": "策略生成失败，请稍后重试。",
+        }
+
+
+# =====================================================
+# Node F: impact_prediction (效果预测/Tool调用)
+# =====================================================
+async def impact_prediction_node(state: AgentState) -> dict[str, Any]:
+    """
+    Node F: 效果预测/Tool调用
+
+    调用工具节点进行数据查询、效果预测。
+    目前使用mock数据模拟真实预测结果。
+    """
+    logger.info("Executing impact_prediction_node")
+
+    matched_features = state.get("matched_features", [])
+    user_intent = state.get("user_intent", {})
+
+    # TODO: 这里应该调用真实的数据查询工具
+    # 目前使用mock数据模拟
+
+    # 简单模拟：根据匹配的特征筛选用户
+    filtered_users = MOCK_USERS_WITH_FEATURES.copy()
+
+    # 应用特征过滤（简化版）
+    for feature in matched_features:
+        name = feature["feature_name"]
+        operator = feature["operator"]
+        value = feature["value"]
+        feature_type = feature.get("feature_type", "categorical")
+
+        try:
+            # 根据特征类型转换 value 的类型
+            if feature_type == "numeric":
+                # 数值类型 - 转换为数字
+                if operator == "between":
+                    # 特殊处理 between 操作符
+                    if isinstance(value, str):
+                        # 尝试解析 "30 and 90" 或 "30-90" 或 "30,90" 格式
+                        import re
+                        parts = re.split(r'\s+and\s+|\s*-\s*|\s*,\s*', value.strip())
+                        if len(parts) == 2:
+                            try:
+                                min_val = float(parts[0]) if '.' in parts[0] else int(parts[0])
+                                max_val = float(parts[1]) if '.' in parts[1] else int(parts[1])
+                                value = [min_val, max_val]
+                            except ValueError:
+                                logger.warning(f"Cannot parse between value: {value}")
+                                continue
+                        else:
+                            logger.warning(f"Invalid between value format: {value}")
+                            continue
+                    elif isinstance(value, (list, tuple)) and len(value) == 2:
+                        min_val = float(value[0]) if isinstance(value[0], str) else value[0]
+                        max_val = float(value[1]) if isinstance(value[1], str) else value[1]
+                        value = [min_val, max_val]
+                    else:
+                        logger.warning(f"Invalid between value: {value}")
+                        continue
+
+                    # 执行 between 过滤
+                    filtered_users = [u for u in filtered_users if value[0] <= u.get(name, 0) <= value[1]]
+                else:
+                    # 其他数值操作符
+                    if isinstance(value, str):
+                        value = float(value) if '.' in value else int(value)
+
+                    # 数值比较
+                    if operator == ">":
+                        filtered_users = [u for u in filtered_users if u.get(name, 0) > value]
+                    elif operator == ">=":
+                        filtered_users = [u for u in filtered_users if u.get(name, 0) >= value]
+                    elif operator == "<":
+                        filtered_users = [u for u in filtered_users if u.get(name, 0) < value]
+                    elif operator == "<=":
+                        filtered_users = [u for u in filtered_users if u.get(name, 0) <= value]
+                    elif operator == "==":
+                        filtered_users = [u for u in filtered_users if u.get(name, 0) == value]
+
+            elif feature_type == "categorical":
+                # 分类类型
+                if operator == "==":
+                    filtered_users = [u for u in filtered_users if u.get(name) == value]
+                elif operator == "in":
+                    # 确保 value 是列表
+                    if not isinstance(value, (list, tuple)):
+                        value = [value]
+                    filtered_users = [u for u in filtered_users if u.get(name) in value]
+
+            elif feature_type == "boolean":
+                # 布尔类型
+                if isinstance(value, str):
+                    value = value.lower() in ['true', '1', 'yes']
+                filtered_users = [u for u in filtered_users if u.get(name) == value]
+
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error filtering feature {name} with value {value}: {e}")
+            # 跳过这个特征，继续处理其他特征
+            continue
+
+    # 计算预测指标
+    audience_size = len(filtered_users)
+
+    # Mock预测数据
+    if audience_size > 0:
+        # 基于人群规模和质量估算转化率
+        avg_loyalty = sum(u.get("brand_loyalty_score", 0) for u in filtered_users) / audience_size
+        base_conversion_rate = 0.05  # 基础转化率5%
+        conversion_rate = base_conversion_rate * (1 + avg_loyalty / 100)  # 根据忠诚度调整
+
+        # 统计会员等级分布
+        tier_distribution = {}
+        for user in filtered_users:
+            tier = user.get("tier", "Member")
+            tier_distribution[tier] = tier_distribution.get(tier, 0) + 1
+
+        # 估算收入
+        from app.data.mock_users import TIER_AVG_ORDER_VALUE
+        estimated_revenue = 0
+        for tier, count in tier_distribution.items():
+            avg_order = TIER_AVG_ORDER_VALUE.get(tier, 18000)
+            estimated_revenue += count * conversion_rate * avg_order
+
+        # 计算ROI（假设营销成本为收入的20%）
+        roi = estimated_revenue / (estimated_revenue * 0.2) if estimated_revenue > 0 else 0
+
+        # 人群质量分
+        quality_score = avg_loyalty
+
+        # Top用户（取前5个）
+        sorted_users = sorted(filtered_users, key=lambda u: u.get("score", 0), reverse=True)
+        top_users = [
+            {
+                "name": u.get("name"),
+                "tier": u.get("tier"),
+                "score": u.get("score"),
+                "r12m_spending": u.get("r12m_spending"),
+            }
+            for u in sorted_users[:5]
+        ]
+
+    else:
+        # 没有匹配用户
+        conversion_rate = 0
+        estimated_revenue = 0
+        roi = 0
+        quality_score = 0
+        tier_distribution = {}
+        top_users = []
+
+    prediction_result: PredictionResult = {
+        "audience_size": audience_size,
+        "conversion_rate": conversion_rate,
+        "estimated_revenue": estimated_revenue,
+        "roi": roi,
+        "quality_score": quality_score,
+        "tier_distribution": tier_distribution,
+        "top_users": top_users,
+    }
+
+    logger.info(f"Prediction result: {prediction_result}")
 
     return {
-        "final_response": response,
-        "thinking_steps": thinking_steps
+        "prediction_result": prediction_result,
     }
 
 
-# Node registry for easy access
+# =====================================================
+# Node G: final_analysis (结果输出)
+# =====================================================
+async def final_analysis_node(state: AgentState) -> dict[str, Any]:
+    """
+    Node G: 结果输出
+
+    将预测数据转化为自然语言的分析报告。
+    """
+    logger.info("Executing final_analysis_node")
+
+    prediction_result = state.get("prediction_result", {})
+    strategy_explanation = state.get("strategy_explanation", "")
+
+    llm = get_llm_manager()
+
+    # 构建提示词
+    prompt = f"""你是一个数据分析专家。根据圈人策略和预测结果，生成一份完整的分析报告。
+
+策略说明：
+{strategy_explanation}
+
+预测结果：
+{json.dumps(prediction_result, ensure_ascii=False, indent=2)}
+
+请生成一份专业的分析报告，包含：
+1. **圈选结果概览**（人群规模、会员分布）
+2. **核心指标预测**（转化率、预估收入、ROI）
+3. **Top用户预览**（列出前3-5个高价值用户）
+4. **执行建议**（基于数据给出的建议）
+
+返回清晰、专业的markdown格式报告（400-600字）。
+"""
+
+    try:
+        # 直接调用LLM生成分析报告
+        response = await llm.model.call(prompt)
+        report = response.strip()
+
+        logger.info(f"Final analysis report generated")
+
+        return {
+            "final_response": report,
+        }
+
+    except Exception as e:
+        logger.error(f"Error in final_analysis: {e}")
+        # 生成简单的后备报告
+        audience_size = prediction_result.get("audience_size", 0)
+        conversion_rate = prediction_result.get("conversion_rate", 0)
+        estimated_revenue = prediction_result.get("estimated_revenue", 0)
+        roi = prediction_result.get("roi", 0)
+
+        fallback_report = f"""# 圈人分析报告
+
+## 圈选结果概览
+- **圈选人数**: {audience_size}人
+- **预估转化率**: {conversion_rate:.2%}
+- **预估收入**: ¥{estimated_revenue:,.0f}
+- **投资回报率(ROI)**: {roi:.2f}倍
+
+## 执行建议
+基于以上数据，建议立即执行营销活动。
+"""
+
+        return {
+            "final_response": fallback_report,
+        }
+
+
+# =====================================================
+# 节点注册表
+# =====================================================
 AGENT_NODES = {
-    "intent_analysis": intent_analysis_node,
-    "feature_extraction": feature_extraction_node,
-    "audience_selection": audience_selection_node,
-    "prediction_optimization": prediction_optimization_node,
-    "response_generation": response_generation_node,
+    "intent_recognition": intent_recognition_node,
+    "ask_clarification": ask_clarification_node,
+    "feature_matching": feature_matching_node,
+    "request_modification": request_modification_node,
+    "strategy_generation": strategy_generation_node,
+    "impact_prediction": impact_prediction_node,
+    "final_analysis": final_analysis_node,
 }

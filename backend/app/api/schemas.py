@@ -1,5 +1,5 @@
 """API request/response schemas."""
-from typing import Optional
+from typing import Optional, Any, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -223,3 +223,147 @@ class CampaignApplicationResponse(BaseModel):
                 "timestamp": "2024-01-15T10:00:00"
             }
         }
+
+
+# =====================================================
+# New schemas for refactored workflow
+# =====================================================
+
+class MatchedFeature(BaseModel):
+    """匹配到的特征."""
+    feature_name: str = Field(..., description="特征名称")
+    feature_type: str = Field(..., description="特征类型")
+    operator: str = Field(..., description="操作符")
+    value: Any = Field(..., description="特征值")
+    description: str = Field(..., description="自然语言描述")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "feature_name": "r12m_spending",
+                "feature_type": "numeric",
+                "operator": ">",
+                "value": 100000,
+                "description": "近12个月消费额大于10万"
+            }
+        }
+
+
+class UserIntent(BaseModel):
+    """用户意图."""
+    business_goal: str = Field(..., description="业务目标")
+    target_audience: dict[str, Any] = Field(..., description="目标人群描述")
+    constraints: list[str] = Field(..., description="约束条件")
+    kpi: str = Field(..., description="核心KPI")
+    size_preference: dict[str, int] = Field(..., description="人群规模偏好")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "business_goal": "提升春季新品转化率",
+                "target_audience": {
+                    "tier": ["VVIP", "VIP"],
+                    "age_group": "25-44"
+                },
+                "constraints": ["排除近7天已购买用户"],
+                "kpi": "conversion_rate",
+                "size_preference": {"min": 100, "max": 500}
+            }
+        }
+
+
+class TopUser(BaseModel):
+    """Top用户信息."""
+    name: str
+    tier: str
+    score: int
+    r12m_spending: int
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "王女士",
+                "tier": "VVIP",
+                "score": 98,
+                "r12m_spending": 1800000
+            }
+        }
+
+
+class PredictionResult(BaseModel):
+    """预测结果."""
+    audience_size: int = Field(..., description="圈选人数")
+    conversion_rate: float = Field(..., description="预估转化率")
+    estimated_revenue: float = Field(..., description="预估收入")
+    roi: float = Field(..., description="投资回报率")
+    quality_score: float = Field(..., description="人群质量分")
+    tier_distribution: dict[str, int] = Field(..., description="会员等级分布")
+    top_users: list[TopUser] = Field(..., description="Top用户列表")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "audience_size": 100,
+                "conversion_rate": 0.08,
+                "estimated_revenue": 144000,
+                "roi": 5.0,
+                "quality_score": 85.5,
+                "tier_distribution": {"VVIP": 30, "VIP": 50, "Member": 20},
+                "top_users": []
+            }
+        }
+
+
+class AnalysisResponseV2(BaseModel):
+    """
+    Response body for analysis endpoint - V2 (refactored workflow).
+
+    支持多轮对话的响应格式。
+    """
+    session_id: str = Field(..., description="Session ID for this conversation")
+
+    # 对话状态
+    status: Literal["clarification_needed", "modification_needed", "success"] = Field(
+        ..., description="响应状态"
+    )
+
+    # 返回的消息（可能是澄清问题、修正建议或最终结果）
+    response: str = Field(..., description="Agent's response")
+
+    # 当 status == "success" 时，以下字段有值
+    user_intent: Optional[UserIntent] = Field(None, description="识别的用户意图")
+    matched_features: Optional[list[MatchedFeature]] = Field(None, description="匹配的特征")
+    strategy_explanation: Optional[str] = Field(None, description="策略解释")
+    prediction_result: Optional[PredictionResult] = Field(None, description="预测结果")
+
+    # 元数据
+    timestamp: datetime = Field(default_factory=datetime.now, description="Response timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "session_id": "abc123-def456-ghi789",
+                "status": "success",
+                "response": "已为您圈选100人高潜人群...",
+                "user_intent": {
+                    "business_goal": "提升转化率",
+                    "target_audience": {"tier": ["VVIP", "VIP"]},
+                    "constraints": [],
+                    "kpi": "conversion_rate",
+                    "size_preference": {"min": 50, "max": 500}
+                },
+                "matched_features": [],
+                "strategy_explanation": "根据您的需求...",
+                "prediction_result": {
+                    "audience_size": 100,
+                    "conversion_rate": 0.08,
+                    "estimated_revenue": 144000,
+                    "roi": 5.0,
+                    "quality_score": 85.5,
+                    "tier_distribution": {},
+                    "top_users": []
+                },
+                "timestamp": "2024-01-15T10:00:00"
+            }
+        }
+

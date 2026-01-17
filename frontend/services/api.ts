@@ -59,14 +59,23 @@ export async function analyzeMarketingGoalStream(
   prompt: string,
   onThinkingStep: (step: ThinkingStep) => void,
   onAnalysisComplete: (result: AnalysisResult) => void,
-  onError: (error: string) => void
+  onError: (error: string) => void,
+  onNodeComplete?: (node: string, timestamp: string) => void,
+  onNodeSummary?: (node: string, summary: string) => void
 ): Promise<void> {
   try {
     const eventSource = new EventSource(
       `${API_BASE}/api/v1/analysis/stream?${new URLSearchParams({ prompt }).toString()}`
     );
 
+    // 🔥 添加实时日志，确认事件是否到达
+    eventSource.onopen = () => {
+      console.log(`[${new Date().toLocaleTimeString()}] ✅ SSE 连接已建立`);
+    };
+
     eventSource.addEventListener('thinking_step', (event) => {
+      const timestamp = new Date().toLocaleTimeString();
+      console.log(`[${timestamp}] 📋 thinking_step 事件`, event.data.substring(0, 80));
       try {
         const data: ThinkingStepEvent = JSON.parse(event.data);
         onThinkingStep({
@@ -82,6 +91,8 @@ export async function analyzeMarketingGoalStream(
 
     // Listen to thinking_step_update events for real-time node completion updates
     eventSource.addEventListener('thinking_step_update', (event) => {
+      const timestamp = new Date().toLocaleTimeString();
+      console.log(`[${timestamp}] ✅ thinking_step_update 事件`, event.data.substring(0, 80));
       try {
         const data: ThinkingStepEvent = JSON.parse(event.data);
         onThinkingStep({
@@ -95,7 +106,37 @@ export async function analyzeMarketingGoalStream(
       }
     });
 
+    // 🔥 新增：监听节点完成事件
+    eventSource.addEventListener('node_complete', (event) => {
+      const timestamp = new Date().toLocaleTimeString();
+      console.log(`[${timestamp}] 🎉 node_complete 事件`, event.data);
+      try {
+        const data = JSON.parse(event.data);
+        if (onNodeComplete) {
+          onNodeComplete(data.node, data.timestamp);
+        }
+      } catch (e) {
+        console.error('Error parsing node complete:', e);
+      }
+    });
+
+    // 🔥 新增：监听节点摘要事件
+    eventSource.addEventListener('node_summary', (event) => {
+      const timestamp = new Date().toLocaleTimeString();
+      console.log(`[${timestamp}] 📝 node_summary 事件`, event.data.substring(0, 80));
+      try {
+        const data = JSON.parse(event.data);
+        if (onNodeSummary) {
+          onNodeSummary(data.node, data.summary);
+        }
+      } catch (e) {
+        console.error('Error parsing node summary:', e);
+      }
+    });
+
     eventSource.addEventListener('analysis_complete', (event) => {
+      const timestamp = new Date().toLocaleTimeString();
+      console.log(`[${timestamp}] 🏁 analysis_complete 事件`);
       try {
         const data: AnalysisResult = JSON.parse(event.data);
         eventSource.close();
