@@ -1,5 +1,6 @@
 """Session and memory management for multi-turn conversations."""
 import uuid
+import json
 import logging
 from datetime import datetime
 from typing import Any, Optional
@@ -81,7 +82,7 @@ class Session:
             "total_turns": len(self.turns)
         }
 
-    def get_history_summary(self, max_turns: int = 3) -> str:
+    def get_history_summary(self, max_turns: int = 10) -> str:
         """Get a summary of recent conversation history.
 
         Args:
@@ -159,7 +160,7 @@ class MemoryManager:
 
     def __init__(self):
         """Initialize memory manager."""
-        self.max_history_tokens = 2000  # Approximate token limit for context
+        self.max_history_tokens = 5000  # Approximate token limit for context (increased for 10-turn memory)
 
     def build_context_for_llm(
         self,
@@ -175,16 +176,38 @@ class MemoryManager:
         Returns:
             Formatted context string.
         """
+        # 🔥 打印对话历史
+        logger.info("=" * 80)
+        logger.info("📚 CONVERSATION HISTORY - Building Context for LLM")
+        logger.info("=" * 80)
+        logger.info(f"Session ID: {session.session_id}")
+        logger.info(f"Total turns: {len(session.turns)}")
+        logger.info(f"Current input: {current_input}")
+        logger.info("-" * 80)
+
         if not session.turns:
             # First turn - no history
-            return f"用户需求：{current_input}"
+            context = f"用户需求：{current_input}"
+            logger.info("First turn - no history")
+            logger.info("=" * 80)
+            return context
 
         # Get history summary
-        history = session.get_history_summary(max_turns=3)
+        history = session.get_history_summary(max_turns=10)
+
+        # 🔥 打印历史摘要
+        logger.info("📜 History Summary (last 10 turns):")
+        logger.info(history)
+        logger.info("-" * 80)
 
         # Build context with previous intent
         latest_turn = session.turns[-1]
         latest_intent = latest_turn.intent
+
+        # 🔥 打印最新一轮的意图
+        logger.info("📌 Latest Intent:")
+        logger.info(json.dumps(latest_intent, ensure_ascii=False, indent=2))
+        logger.info("-" * 80)
 
         # 收集所有历史的约束条件
         all_constraints = []
@@ -194,6 +217,12 @@ class MemoryManager:
 
         # 去重
         all_constraints = list(dict.fromkeys(all_constraints))
+
+        # 🔥 打印累积的约束条件
+        logger.info(f"📋 Accumulated Constraints ({len(all_constraints)} total):")
+        for i, constraint in enumerate(all_constraints, 1):
+            logger.info(f"  {i}. {constraint}")
+        logger.info("-" * 80)
 
         context = f"""## 对话历史
 
@@ -224,6 +253,12 @@ class MemoryManager:
 - 保留之前明确提到的所有有效约束和目标
 - 合并所有轮次的需求，形成完整的意图理解
 """
+
+        # 🔥 打印最终构建的上下文
+        logger.info("📦 FINAL CONTEXT TO BE SENT TO LLM:")
+        logger.info(context)
+        logger.info("=" * 80)
+
         return context
 
     def should_modify_intent(

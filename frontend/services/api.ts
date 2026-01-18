@@ -43,6 +43,7 @@ export interface AnalysisResult {
   response: string;
   thinkingSteps: ThinkingStep[];
   timestamp: string;
+  segmentationProposal?: any;  // 新增：结构化方案
 }
 
 export interface ThinkingStepEvent {
@@ -151,6 +152,11 @@ export async function analyzeMarketingGoalStream(
       console.log(`[${timestamp}] 🏁 analysis_complete 事件`);
       try {
         const data: AnalysisResult = JSON.parse(event.data);
+        console.log('Analysis complete data:', data);
+        console.log('Has segmentationProposal?', !!data.segmentationProposal);
+        if (data.segmentationProposal) {
+          console.log('SegmentationProposal content:', data.segmentationProposal);
+        }
         eventSource.close();
         onAnalysisComplete(data);
       } catch (e) {
@@ -272,6 +278,25 @@ export async function resetSession(sessionId?: string | null): Promise<SessionRe
 export async function createSession(): Promise<SessionResponse> {
   const response = await fetch(`${API_BASE}/api/v1/session/create`, {
     method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Calculate segmentation result based on proposal
+ */
+export async function calculateSegmentation(proposal: any): Promise<any> {
+  const response = await fetch(`${API_BASE}/api/v1/segmentation/calculate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(proposal),
   });
 
   if (!response.ok) {

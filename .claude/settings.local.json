@@ -11,7 +11,8 @@
       "Bash(ls:*)",
       "Bash(curl:*)",
       "Bash(npm install:*)",
-      "Bash(xargs cat:*)"
+      "Bash(xargs cat:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

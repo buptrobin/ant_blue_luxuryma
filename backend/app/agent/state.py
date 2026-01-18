@@ -60,7 +60,13 @@ class AgentState(MessagesState, total=False):
 
     # ========== 最终输出 ==========
     final_response: str  # 最终回复
+    segmentation_proposal: dict[str, Any]  # 结构化的圈人方案 (新增)
 
     # ========== 中间状态 ==========
     clarification_question: str  # 澄清问题（用于反问用户）
     modification_request: str  # 修正请求（用于引导用户修改意图）
+
+    # ========== 多轮对话支持 ==========
+    conversation_context: str  # 对话上下文（文本摘要）
+    previous_intent: UserIntent  # 上一轮的用户意图（用于融合）
+    is_modification: bool  # 是否是修改现有需求

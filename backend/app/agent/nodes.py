@@ -6,6 +6,7 @@ from typing import Any
 
 from app.agent.state import AgentState, UserIntent, MatchedFeature, PredictionResult
 from app.models.llm import get_llm_manager
+from app.models.segmentation import SegmentationProposal, TargetTrait, FeatureRule
 from app.data.feature_metadata import FEATURE_METADATA, search_features_by_keywords
 from app.data.mock_users import MOCK_USERS_WITH_FEATURES
 from langgraph.types import Send, interrupt
@@ -29,24 +30,39 @@ async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
     user_input = state.get("user_input", "")
     messages = state.get("messages", [])
     conversation_context = state.get("conversation_context", "")
+    previous_intent = state.get("previous_intent")  # 🔥 获取上一轮的结构化意图
 
     llm = get_llm_manager()
 
-    # 构建提示词 - 如果有对话上下文，则包含它
+    # 🔥 构建提示词 - 如果有上一轮意图，使用它作为基线
     context_section = ""
-    if conversation_context and conversation_context != f"用户需求：{user_input}":
-        # 有对话历史 - 多轮对话模式
+    if previous_intent:
+        # 有对话历史 - 多轮对话模式，使用上一轮意图作为基线
+        logger.info(f"Multi-turn mode: Using previous intent as baseline")
+        logger.info(f"Previous intent: {previous_intent}")
+
+        # 将上一轮意图转换为JSON字符串，作为融合的基线
+        previous_intent_json = json.dumps(previous_intent, ensure_ascii=False, indent=2)
+
         context_section = f"""
 {conversation_context}
 
-**多轮对话模式**：
-你需要仔细阅读上面的对话历史和累积的营销策略信息，然后分析新的用户输入。
+**多轮对话模式 - 重要**：
+这是一个多轮对话。上一轮我们已经识别出的意图是：
 
-关键要求：
-1. **融合所有信息**：将对话历史中的所有约束条件、目标人群、业务目标与新输入融合在一起
-2. **累积约束条件**：新的约束条件要追加到之前的约束条件列表中（除非明确说"去掉"某个条件）
-3. **保留历史信息**：如果新输入没有提到某个维度（如年龄、性别），保留之前的设置
-4. **覆盖冲突信息**：如果新输入与历史冲突（如之前说"VIP"，现在说"只要VVIP"），以新输入为准
+```json
+{previous_intent_json}
+```
+
+现在用户提供了新的输入："{user_input}"
+
+**你的任务**：
+1. **以上一轮意图为基线**：如果新输入没有提到某个字段（如business_goal、kpi），保留上一轮的值
+2. **累积约束条件**：将新的约束条件追加到constraints列表中（除非用户明确说"去掉"某条件）
+3. **更新提到的字段**：如果新输入提到了某个维度（如消费偏好、性别），更新target_audience中的对应字段
+4. **覆盖冲突信息**：如果新输入与历史冲突（如之前说"VIP"，现在说"VVIP"），以新输入为准
+
+**关键**：不要从头构建意图！从上面的previous_intent开始，根据新输入进行增量更新。
 
 """
     else:
@@ -58,17 +74,19 @@ async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
 
     prompt = f"""{context_section}你是一个营销专家，负责分析用户的圈人需求。
 
-请分析{"用户的完整需求（融合所有对话历史）" if conversation_context and conversation_context != f"用户需求：{user_input}" else "用户的意图"}，并返回JSON格式的结果，包含以下字段：
+{"**重要提醒**：这是多轮对话，你必须在上一轮意图的基础上进行增量更新，而不是从零开始。" if previous_intent else ""}
 
-- business_goal: 业务目标（如 "提升转化率", "扩大客户群", "促进复购"等）
-- target_audience: 目标人群描述（包含会员等级、年龄、性别、消费力等维度）
-- constraints: **所有的**约束条件列表（如 "排除近期已购买用户", "只要女性客户"等）- 包括历史的和新增的
-- kpi: 核心KPI（conversion_rate/revenue/visit_rate/engagement）
-- size_preference: 人群规模偏好 {{"min": 最小人数, "max": 最大人数}}
+请分析{"用户的新输入，并更新意图" if previous_intent else "用户的意图"}，并返回JSON格式的结果，包含以下字段：
+
+- business_goal: 业务目标（如 "提升转化率", "扩大客户群", "促进复购"等）{"- 如果新输入未提及，保留上一轮的值" if previous_intent else ""}
+- target_audience: 目标人群描述（包含会员等级、年龄、性别、消费力等维度）{"- 只更新新输入提到的字段，其他字段保留上一轮的值" if previous_intent else ""}
+- constraints: **所有的**约束条件列表（如 "排除近期已购买用户", "只要女性客户"等）{"- 在上一轮的基础上追加新约束" if previous_intent else ""}
+- kpi: 核心KPI（conversion_rate/revenue/visit_rate/engagement）{"- 如果新输入未提及，保留上一轮的值" if previous_intent else ""}
+- size_preference: 人群规模偏好 {{"min": 最小人数, "max": 最大人数}}{"- 如果新输入未提及，保留上一轮的值" if previous_intent else ""}
 - is_clear: 意图是否明确（true/false）。如果用户描述模糊、缺少关键信息，则为false
 - summary: 用1-2句话总结你对用户**完整需求**的理解（融合所有历史信息后的理解）
 
-**重要**：如果这是多轮对话，constraints字段必须包含所有历史约束条件和新增的约束条件。
+{"**再次强调**：你必须以上面提供的previous_intent为起点，根据新输入进行增量修改。不要丢失任何历史信息！" if previous_intent else ""}
 
 只返回JSON，不要其他内容。
 
@@ -90,8 +108,28 @@ async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
 """
 
     try:
+        # 🔥 打印完整的提示词
+        logger.info("=" * 80)
+        logger.info("🤖 LLM CALL - Intent Recognition Node")
+        logger.info("=" * 80)
+        logger.info(f"Multi-turn mode: {previous_intent is not None}")
+        if previous_intent:
+            logger.info(f"Previous intent: {json.dumps(previous_intent, ensure_ascii=False, indent=2)}")
+        logger.info("-" * 80)
+        logger.info("📝 PROMPT TO LLM:")
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # 直接调用LLM底层方法（不使用旧的 analyze_intent）
+        logger.info(f"Calling LLM for intent recognition (multi-turn: {previous_intent is not None})")
         response_text = await llm.model.call(prompt)
+
+        # 🔥 打印LLM的完整响应
+        logger.info("-" * 80)
+        logger.info("📥 LLM RESPONSE:")
+        logger.info(response_text)
+        logger.info("=" * 80)
+
         logger.info(f"Intent recognition raw response: {response_text[:200]}...")
 
         # 尝试解析JSON
@@ -108,6 +146,18 @@ async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
                 raise ValueError("Cannot extract JSON from response")
 
         logger.info(f"Intent recognition parsed: {response}")
+
+        # 🔥 如果是多轮对话，记录融合情况
+        if previous_intent:
+            logger.info("=" * 50)
+            logger.info("Multi-turn Intent Merge Report:")
+            logger.info(f"  Previous business_goal: {previous_intent.get('business_goal', 'N/A')}")
+            logger.info(f"  New business_goal: {response.get('business_goal', 'N/A')}")
+            logger.info(f"  Previous constraints: {previous_intent.get('constraints', [])}")
+            logger.info(f"  New constraints: {response.get('constraints', [])}")
+            logger.info(f"  Previous kpi: {previous_intent.get('kpi', 'N/A')}")
+            logger.info(f"  New kpi: {response.get('kpi', 'N/A')}")
+            logger.info("=" * 50)
 
         # 解析结果
         is_clear = response.get("is_clear", True)  # 默认为True，只有明确标记false才认为不清楚
@@ -185,9 +235,24 @@ async def ask_clarification_node(state: AgentState) -> dict[str, Any]:
 """
 
     try:
+        # 🔥 打印完整的提示词
+        logger.info("=" * 80)
+        logger.info("🤖 LLM CALL - Ask Clarification Node")
+        logger.info("=" * 80)
+        logger.info("-" * 80)
+        logger.info("📝 PROMPT TO LLM:")
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # 直接调用LLM
         response = await llm.model.call(prompt)
         clarification = response.strip()
+
+        # 🔥 打印LLM的完整响应
+        logger.info("-" * 80)
+        logger.info("📥 LLM RESPONSE:")
+        logger.info(response)
+        logger.info("=" * 80)
 
         logger.info(f"Clarification question: {clarification}")
 
@@ -262,8 +327,24 @@ async def feature_matching_node(state: AgentState) -> dict[str, Any]:
 """
 
     try:
+        # 🔥 打印完整的提示词
+        logger.info("=" * 80)
+        logger.info("🤖 LLM CALL - Feature Matching Node")
+        logger.info("=" * 80)
+        logger.info("-" * 80)
+        logger.info("📝 PROMPT TO LLM:")
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # 直接调用LLM进行特征匹配
         response_text = await llm.model.call(prompt)
+
+        # 🔥 打印LLM的完整响应
+        logger.info("-" * 80)
+        logger.info("📥 LLM RESPONSE:")
+        logger.info(response_text)
+        logger.info("=" * 80)
+
         logger.info(f"Feature matching raw response: {response_text[:200]}...")
 
         # 解析JSON
@@ -354,9 +435,24 @@ async def request_modification_node(state: AgentState) -> dict[str, Any]:
 """
 
     try:
+        # 🔥 打印完整的提示词
+        logger.info("=" * 80)
+        logger.info("🤖 LLM CALL - Request Modification Node")
+        logger.info("=" * 80)
+        logger.info("-" * 80)
+        logger.info("📝 PROMPT TO LLM:")
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # 直接调用LLM生成修正建议
         response = await llm.model.call(prompt)
         modification_request = response.strip()
+
+        # 🔥 打印LLM的完整响应
+        logger.info("-" * 80)
+        logger.info("📥 LLM RESPONSE:")
+        logger.info(response)
+        logger.info("=" * 80)
 
         logger.info(f"Modification request: {modification_request}")
 
@@ -418,9 +514,24 @@ async def strategy_generation_node(state: AgentState) -> dict[str, Any]:
 """
 
     try:
+        # 🔥 打印完整的提示词
+        logger.info("=" * 80)
+        logger.info("🤖 LLM CALL - Strategy Generation Node")
+        logger.info("=" * 80)
+        logger.info("-" * 80)
+        logger.info("📝 PROMPT TO LLM:")
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # 直接调用LLM生成策略解释
         response = await llm.model.call(prompt)
         strategy = response.strip()
+
+        # 🔥 打印LLM的完整响应
+        logger.info("-" * 80)
+        logger.info("📥 LLM RESPONSE:")
+        logger.info(response)
+        logger.info("=" * 80)
 
         logger.info(f"Strategy explanation: {strategy[:100]}...")
 
@@ -611,11 +722,14 @@ async def final_analysis_node(state: AgentState) -> dict[str, Any]:
     Node G: 结果输出
 
     将预测数据转化为自然语言的分析报告。
+    同时输出结构化的圈人方案数据。
     """
     logger.info("Executing final_analysis_node")
 
     prediction_result = state.get("prediction_result", {})
     strategy_explanation = state.get("strategy_explanation", "")
+    user_intent = state.get("user_intent", {})
+    matched_features = state.get("matched_features", [])
 
     llm = get_llm_manager()
 
@@ -638,14 +752,39 @@ async def final_analysis_node(state: AgentState) -> dict[str, Any]:
 """
 
     try:
+        # 🔥 打印完整的提示词
+        logger.info("=" * 80)
+        logger.info("🤖 LLM CALL - Final Analysis Node")
+        logger.info("=" * 80)
+        logger.info("-" * 80)
+        logger.info("📝 PROMPT TO LLM:")
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # 直接调用LLM生成分析报告
         response = await llm.model.call(prompt)
         report = response.strip()
 
+        # 🔥 打印LLM的完整响应
+        logger.info("-" * 80)
+        logger.info("📥 LLM RESPONSE:")
+        logger.info(response)
+        logger.info("=" * 80)
+
         logger.info(f"Final analysis report generated")
+
+        # 构建结构化的圈人方案
+        logger.info("Building segmentation proposal...")
+        segmentation_proposal = _build_segmentation_proposal(
+            user_intent,
+            matched_features,
+            prediction_result
+        )
+        logger.info(f"Segmentation proposal built: {segmentation_proposal is not None}")
 
         return {
             "final_response": report,
+            "segmentation_proposal": segmentation_proposal,  # 新增：结构化方案
         }
 
     except Exception as e:
@@ -668,9 +807,112 @@ async def final_analysis_node(state: AgentState) -> dict[str, Any]:
 基于以上数据，建议立即执行营销活动。
 """
 
+        # 构建结构化的圈人方案（即使出错也要返回）
+        try:
+            segmentation_proposal = _build_segmentation_proposal(
+                user_intent,
+                matched_features,
+                prediction_result
+            )
+        except Exception as e2:
+            logger.error(f"Error building segmentation proposal: {e2}")
+            segmentation_proposal = None
+
         return {
             "final_response": fallback_report,
+            "segmentation_proposal": segmentation_proposal,
         }
+
+
+def _build_segmentation_proposal(
+    user_intent: dict[str, Any],
+    matched_features: list[dict[str, Any]],
+    prediction_result: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    构建结构化的圈人方案数据
+    """
+    # 提取营销目标
+    business_goal = user_intent.get("business_goal", "未指定营销目标")
+
+    # 提取约束条件
+    constraints = user_intent.get("constraints", [])
+
+    # 提取KPI
+    kpi = user_intent.get("kpi", "conversion_rate")
+
+    # 提取目标人群
+    target_audience = user_intent.get("target_audience", {})
+
+    # 将匹配的特征转换为 TargetTrait 结构
+    trait_dict: dict[str, list[dict]] = {}
+    for feature in matched_features:
+        feature_name = feature.get("feature_name", "")
+        feature_type = feature.get("feature_type", "categorical")
+        operator = feature.get("operator", "=")
+        value = feature.get("value", "")
+        description = feature.get("description", "")
+
+        # 确定特征分类
+        category = _categorize_feature(feature_name, feature_type)
+
+        if category not in trait_dict:
+            trait_dict[category] = []
+
+        trait_dict[category].append({
+            "key": feature_name,
+            "operator": operator,
+            "value": value,
+            "description": description
+        })
+
+    # 构建 target_traits
+    target_traits = [
+        {
+            "category": category,
+            "rules": rules
+        }
+        for category, rules in trait_dict.items()
+    ]
+
+    # 构建完整的方案
+    proposal = {
+        "marketing_goal": business_goal,
+        "constraints": constraints,
+        "target_traits": target_traits,
+        "kpi": kpi,
+        "target_audience": target_audience
+    }
+
+    return proposal
+
+
+def _categorize_feature(feature_name: str, feature_type: str) -> str:
+    """
+    根据特征名称和类型，确定特征分类
+    """
+    # 消费相关
+    if any(keyword in feature_name.lower() for keyword in ["amount", "value", "price", "消费", "金额"]):
+        return "消费门槛"
+
+    # 品类相关
+    if any(keyword in feature_name.lower() for keyword in ["category", "品类", "类别", "product"]):
+        return "品类兴趣"
+
+    # 行为相关
+    if any(keyword in feature_name.lower() for keyword in ["frequency", "visit", "购买", "访问", "次数"]):
+        return "行为习惯"
+
+    # 时间相关
+    if any(keyword in feature_name.lower() for keyword in ["recency", "最近", "last", "时间"]):
+        return "活跃度"
+
+    # 会员等级
+    if any(keyword in feature_name.lower() for keyword in ["tier", "level", "等级", "vip"]):
+        return "会员等级"
+
+    # 默认分类
+    return "其他条件"
 
 
 # =====================================================

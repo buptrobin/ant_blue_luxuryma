@@ -337,7 +337,12 @@ async def analyze_marketing_goal_stream(
             audience_list = final_state.get("audience", [])
             metrics_data = final_state.get("metrics", {})
             response_text = final_state.get("final_response", "")
-            intent = final_state.get("intent", {})
+            intent = final_state.get("user_intent", {})
+            segmentation_proposal = final_state.get("segmentation_proposal")  # 新增：结构化方案
+
+            logger.info(f"Extracted segmentation_proposal: {segmentation_proposal is not None}")
+            if segmentation_proposal:
+                logger.info(f"Proposal keys: {list(segmentation_proposal.keys())}")
 
             # Convert to response models
             audience = [
@@ -380,6 +385,7 @@ async def analyze_marketing_goal_stream(
                 "metrics": metrics,
                 "response": response_text,
                 "thinkingSteps": final_state.get("thinking_steps", []),
+                "segmentationProposal": segmentation_proposal,  # 新增：结构化方案
                 "timestamp": datetime.now().isoformat()
             }
             yield f"event: analysis_complete\n"
@@ -986,3 +992,150 @@ async def analyze_marketing_goal_v2_stream(
         }
     )
 
+
+
+
+# ====== Segmentation Calculation Endpoint ======
+
+def _safe_numeric_compare(user_value, rule_value, op):
+    """安全的数值比较，处理类型转换"""
+    try:
+        # 尝试转换为 float 进行比较
+        user_val_num = float(user_value) if user_value is not None else 0
+        rule_val_num = float(rule_value) if rule_value is not None else 0
+
+        if op == ">=":
+            return user_val_num >= rule_val_num
+        elif op == ">":
+            return user_val_num > rule_val_num
+        elif op == "<=":
+            return user_val_num <= rule_val_num
+        elif op == "<":
+            return user_val_num < rule_val_num
+        else:
+            return False
+    except (ValueError, TypeError):
+        # 如果无法转换为数字，返回 False
+        logger.warning(f"Cannot compare {user_value} {op} {rule_value} - type conversion failed")
+        return False
+
+
+@router.post("/segmentation/calculate")
+async def calculate_segmentation(proposal: dict):
+    """
+    Calculate segmentation result based on proposal.
+    
+    This endpoint receives a SegmentationProposal and returns
+    detailed prediction metrics and audience breakdown.
+    
+    Args:
+        proposal: SegmentationProposal dict with targeting criteria
+        
+    Returns:
+        SegmentationResult with predictions and audience data
+    """
+    from app.models.segmentation import SegmentationProposal
+    from app.data.mock_users import MOCK_USERS_WITH_FEATURES
+    
+    logger.info(f"Calculating segmentation for proposal: {proposal.get('marketing_goal', 'N/A')}")
+    
+    try:
+        # 验证输入
+        if not proposal:
+            raise HTTPException(status_code=400, detail="Proposal is required")
+        
+        # 提取目标特征和约束
+        target_traits = proposal.get("target_traits", [])
+        target_audience = proposal.get("target_audience", {})
+        constraints = proposal.get("constraints", [])
+        
+        # 模拟圈选逻辑：根据特征筛选用户
+        # 实际生产环境中，这里应该调用真实的数据查询引擎
+        filtered_users = MOCK_USERS_WITH_FEATURES.copy()
+        
+        # 基于 target_traits 进行筛选
+        for trait in target_traits:
+            category = trait.get("category", "")
+            rules = trait.get("rules", [])
+            
+            for rule in rules:
+                key = rule.get("key", "")
+                operator = rule.get("operator", "=")
+                value = rule.get("value")
+
+                # 应用筛选规则
+                if operator in [">=", ">", "<=", "<"]:
+                    # 数值比较操作符 - 使用安全比较
+                    filtered_users = [u for u in filtered_users if _safe_numeric_compare(u.get(key, 0), value, operator)]
+                elif operator == "=":
+                    filtered_users = [u for u in filtered_users if u.get(key) == value]
+                elif operator == "in":
+                    if isinstance(value, list):
+                        filtered_users = [u for u in filtered_users if u.get(key) in value]
+                elif operator == "between" and isinstance(value, list) and len(value) == 2:
+                    # between 操作符 - 确保边界值也是数字类型
+                    try:
+                        min_val = float(value[0]) if value[0] is not None else 0
+                        max_val = float(value[1]) if value[1] is not None else 0
+                        filtered_users = [u for u in filtered_users
+                                        if min_val <= float(u.get(key, 0) or 0) <= max_val]
+                    except (ValueError, TypeError):
+                        logger.warning(f"Cannot apply 'between' filter for {key}: {value}")
+                        continue
+        
+        # 基于 target_audience 进行筛选
+        if target_audience.get("tier"):
+            tiers = target_audience["tier"]
+            if isinstance(tiers, str):
+                tiers = [tiers]
+            filtered_users = [u for u in filtered_users if u.get("tier") in tiers]
+        
+        # 计算预测指标
+        audience_count = len(filtered_users)
+        
+        # 根据人群规模动态计算转化率（模拟：人群越精准，转化率越高）
+        base_conversion_rate = 0.04  # 4%
+        if audience_count < 100:
+            est_conversion_rate = base_conversion_rate * 1.5  # 6%
+        elif audience_count < 500:
+            est_conversion_rate = base_conversion_rate * 1.2  # 4.8%
+        elif audience_count < 1000:
+            est_conversion_rate = base_conversion_rate  # 4%
+        else:
+            est_conversion_rate = base_conversion_rate * 0.8  # 3.2%
+        
+        # 计算预估收入
+        avg_order_value = AVG_ORDER_VALUE  # 从mock_users导入
+        est_revenue = audience_count * est_conversion_rate * avg_order_value
+        
+        # 计算ROI（假设营销成本为收入的10%）
+        marketing_cost = est_revenue * 0.1
+        roi = (est_revenue - marketing_cost) / marketing_cost if marketing_cost > 0 else 0
+        
+        # 统计会员等级分布
+        tier_distribution = {}
+        for user in filtered_users:
+            tier = user.get("tier", "Unknown")
+            tier_distribution[tier] = tier_distribution.get(tier, 0) + 1
+        
+        # 构建返回结果
+        result = {
+            "audience_count": audience_count,
+            "est_conversion_rate": est_conversion_rate,
+            "est_revenue": est_revenue,
+            "roi": roi,
+            "trait_breakdown": proposal,  # 回传确认的方案
+            "audience": filtered_users[:50],  # 返回前50个用户
+            "tier_distribution": tier_distribution
+        }
+        
+        logger.info(
+            f"Segmentation calculated: {audience_count} users, "
+            f"CVR: {est_conversion_rate:.2%}, Revenue: ¥{est_revenue:,.0f}"
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error calculating segmentation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

@@ -8,10 +8,10 @@ import {
   ExclamationCircleOutlined
 } from '@ant-design/icons';
 import { Input, Button, Avatar, Card, Space, Typography, Alert } from 'antd';
-import { ChatMessage, ThinkingStep, ThinkingStepStatus } from '../types';
+import { ChatMessage, ThinkingStep, ThinkingStepStatus, SegmentationProposal, SegmentationResult } from '../types';
 import ThinkingProcess from './ThinkingProcess';
 import { INITIAL_PROMPT } from '../constants';
-import { analyzeMarketingGoalStream, healthCheck, resetSession, createSession } from '../services/api';
+import { analyzeMarketingGoalStream, healthCheck, resetSession, createSession, calculateSegmentation } from '../services/api';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
@@ -19,9 +19,10 @@ const { Text, Title } = Typography;
 interface ChatInterfaceProps {
   onAnalyzeStart: () => void;
   onAnalyzeComplete: (analysisData: any) => void;
+  onApplyProposal: (result: SegmentationResult) => void;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyzeComplete }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyzeComplete, onApplyProposal }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState(INITIAL_PROMPT);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -29,6 +30,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
   const [apiError, setApiError] = useState<string | null>(null);
   const [isApiReady, setIsApiReady] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [pendingProposal, setPendingProposal] = useState<SegmentationProposal | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
@@ -117,11 +119,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
           setIsProcessing(false);
           setThinkingSteps(result.thinkingSteps);
 
+          // 保存结构化方案
+          if (result.segmentationProposal) {
+            setPendingProposal(result.segmentationProposal);
+            console.log('收到结构化方案:', result.segmentationProposal);
+          }
+
           // Pass analysis data to parent component
           onAnalyzeComplete({
             audience: result.audience,
             metrics: result.metrics,
-            thinking_steps: result.thinkingSteps
+            thinking_steps: result.thinkingSteps,
+            segmentationProposal: result.segmentationProposal
           });
         },
         // onError callback
@@ -198,10 +207,51 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
       // Clear input
       setInputValue('');
 
+      // Clear pending proposal
+      setPendingProposal(null);
+
       console.log('Session cleared, new session:', sessionResponse.session_id);
     } catch (error) {
       console.error('Failed to clear session:', error);
       setApiError(`清空失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const handleApply = async () => {
+    if (!pendingProposal) {
+      setApiError('没有待应用的方案');
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      setApiError(null);
+
+      console.log('正在应用方案:', pendingProposal);
+
+      // 调用计算接口
+      const result = await calculateSegmentation(pendingProposal);
+
+      console.log('收到计算结果:', result);
+
+      // 通知父组件更新Dashboard
+      onApplyProposal(result);
+
+      // 显示成功消息
+      const successMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: 'agent',
+        text: `✅ 已根据当前策略更新右侧看板\n\n圈选人数: ${result.audience_count}人\n预估转化率: ${(result.est_conversion_rate * 100).toFixed(2)}%\n预估收入: ¥${result.est_revenue.toLocaleString()}`,
+        timestamp: new Date(),
+        isThinking: false
+      };
+      setMessages(prev => [...prev, successMsg]);
+
+      setIsProcessing(false);
+    } catch (error) {
+      console.error('应用方案失败:', error);
+      setApiError(`应用失败：${error instanceof Error ? error.message : String(error)}`);
+      setIsProcessing(false);
     }
   };
 
@@ -257,11 +307,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
                   borderColor: msg.sender === 'user' ? '#D4AF37' : '#E0E0E0'
                 }}
               >
-                <Text style={{
-                  color: msg.sender === 'user' ? '#FFFFFF' : '#000000'
-                }}>
+                <div
+                  style={{
+                    color: msg.sender === 'user' ? '#FFFFFF' : '#000000',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    lineHeight: 1.6,
+                  }}
+                >
                   {msg.text}
-                </Text>
+                </div>
               </Card>
             </div>
 
@@ -301,10 +356,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
           </Button>
           <Button
             size="small"
-            onClick={() => setInputValue(INITIAL_PROMPT)}
-            disabled={isProcessing}
+            type={pendingProposal ? "primary" : "default"}
+            onClick={handleApply}
+            disabled={isProcessing || !pendingProposal}
           >
-            应用
+            应用{pendingProposal ? ' ✓' : ''}
           </Button>
         </div>
 

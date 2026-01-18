@@ -47,7 +47,7 @@ class ArkChat(ChatModel):
         self,
         api_key: str | None = None,
         base_url: str | None = None,
-        model: str = "doubao-seed-1-8-251228",
+        model: str = "doubao-seed-1-6-flash-250828",
         timeout: int = 60
     ):
         """Initialize Ark chat model.
@@ -55,12 +55,12 @@ class ArkChat(ChatModel):
         Args:
             api_key: Ark API Key. Defaults to ARK_API_KEY env var.
             base_url: Ark base URL. Defaults to ARK_BASE_URL env var.
-            model: Model name. Defaults to 'doubao-seed-1-8-251228'.
+            model: Model name. Defaults to 'doubao-seed-1-6-flash-250828'.
             timeout: Request timeout in seconds.
         """
         self.api_key = api_key or os.getenv("ARK_API_KEY", "")
         self.base_url = base_url or os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3/")
-        self.model = model or os.getenv("ARK_MODEL", "doubao-seed-1-8-251228")
+        self.model = model or os.getenv("ARK_MODEL", "doubao-seed-1-6-flash-250828")
         self.timeout = timeout
 
         # Ensure base_url has proper format

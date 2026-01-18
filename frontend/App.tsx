@@ -4,6 +4,7 @@ import { MenuUnfoldOutlined, MenuFoldOutlined } from '@ant-design/icons';
 import ChatInterface from './components/ChatInterface';
 import Dashboard from './components/Dashboard';
 import { motion, AnimatePresence } from 'framer-motion';
+import { SegmentationProposal, SegmentationResult } from './types';
 
 const { Sider, Content } = Layout;
 
@@ -12,6 +13,8 @@ const App: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(420);
   const [isDragging, setIsDragging] = useState(false);
+  const [pendingProposal, setPendingProposal] = useState<SegmentationProposal | null>(null);
+  const [segmentationResult, setSegmentationResult] = useState<SegmentationResult | null>(null);
 
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
@@ -63,8 +66,15 @@ const App: React.FC = () => {
           onAnalyzeStart={() => {
             if (window.innerWidth < 992) setCollapsed(true);
           }}
-          onAnalyzeComplete={() => {
+          onAnalyzeComplete={(data) => {
             setIsDashboardVisible(true);
+            // 如果有结构化方案，保存到状态
+            if (data.segmentationProposal) {
+              setPendingProposal(data.segmentationProposal);
+            }
+          }}
+          onApplyProposal={(result) => {
+            setSegmentationResult(result);
           }}
         />
         {/* Mobile Toggle inside Sider for closing */}
@@ -110,7 +120,13 @@ const App: React.FC = () => {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 >
-                <Dashboard />
+                <Dashboard
+                  pendingProposal={pendingProposal}
+                  segmentationResult={segmentationResult}
+                  onApplyProposal={(result) => {
+                    setSegmentationResult(result);
+                  }}
+                />
                 </motion.div>
             ) : (
                 <motion.div

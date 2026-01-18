@@ -1,22 +1,53 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Tabs, Layout, Typography } from 'antd';
 import { DashboardOutlined, TeamOutlined, ControlOutlined } from '@ant-design/icons';
 import InsightCard from './InsightCard';
 import PredictionWidget from './PredictionWidget';
 import StrategyConstraints from './StrategyConstraints';
 import UserList from './UserList';
-import { PredictionMetrics } from '../types';
+import { PredictionMetrics, SegmentationProposal, SegmentationResult } from '../types';
 import { AVG_ORDER_VALUE } from '../constants';
 
 const { Content, Header } = Layout;
 const { Title, Text } = Typography;
 
-const Dashboard: React.FC = () => {
-  const [metrics, setMetrics] = useState<PredictionMetrics>({
-    audienceSize: 1200,
-    conversionRate: 2.5,
-    estimatedRevenue: 5400000 
+interface DashboardProps {
+  pendingProposal: SegmentationProposal | null;
+  segmentationResult: SegmentationResult | null;
+  onApplyProposal: (result: SegmentationResult) => void;
+}
+
+const Dashboard: React.FC<DashboardProps> = ({
+  pendingProposal,
+  segmentationResult,
+  onApplyProposal
+}) => {
+  // 使用真实数据或默认值
+  const [metrics, setMetrics] = useState<PredictionMetrics>(() => {
+    if (segmentationResult) {
+      return {
+        audienceSize: segmentationResult.audience_count,
+        conversionRate: segmentationResult.est_conversion_rate * 100, // 转换为百分比
+        estimatedRevenue: segmentationResult.est_revenue
+      };
+    }
+    return {
+      audienceSize: 0,
+      conversionRate: 0,
+      estimatedRevenue: 0
+    };
   });
+
+  // 当segmentationResult更新时，更新metrics
+  useEffect(() => {
+    if (segmentationResult) {
+      setMetrics({
+        audienceSize: segmentationResult.audience_count,
+        conversionRate: segmentationResult.est_conversion_rate * 100,
+        estimatedRevenue: segmentationResult.est_revenue
+      });
+    }
+  }, [segmentationResult]);
 
   const handleAudienceSizeChange = (size: number) => {
     const baseRate = 4.0;
@@ -42,7 +73,10 @@ const Dashboard: React.FC = () => {
       ),
       children: (
         <div className="space-y-6">
-          <InsightCard />
+          <InsightCard
+            targetTraits={segmentationResult?.trait_breakdown?.target_traits || []}
+            constraints={segmentationResult?.trait_breakdown?.constraints || []}
+          />
           <PredictionWidget metrics={metrics} onAudienceSizeChange={handleAudienceSizeChange} />
         </div>
       ),
@@ -76,7 +110,9 @@ const Dashboard: React.FC = () => {
           <Title level={2} style={{ marginBottom: 4, fontFamily: 'Playfair Display, serif', color: '#0F172A' }}>
             营销活动工作台
           </Title>
-          <Text type="secondary">场景：春季手袋上市 • 目标：高潜人群圈选</Text>
+          <Text type="secondary">
+            {segmentationResult?.trait_breakdown?.marketing_goal || '等待Agent分析...'}
+          </Text>
         </div>
       </Header>
       <Content className="overflow-y-auto px-6 lg:px-8 pb-8 custom-scrollbar">
