@@ -8,6 +8,8 @@ import {
   ExclamationCircleOutlined
 } from '@ant-design/icons';
 import { Input, Button, Avatar, Card, Space, Typography, Alert } from 'antd';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ChatMessage, ThinkingStep, ThinkingStepStatus, SegmentationProposal, SegmentationResult } from '../types';
 import ThinkingProcess from './ThinkingProcess';
 import { INITIAL_PROMPT } from '../constants';
@@ -307,16 +309,73 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
                   borderColor: msg.sender === 'user' ? '#D4AF37' : '#E0E0E0'
                 }}
               >
-                <div
-                  style={{
-                    color: msg.sender === 'user' ? '#FFFFFF' : '#000000',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    lineHeight: 1.6,
-                  }}
-                >
-                  {msg.text}
-                </div>
+                {msg.sender === 'agent' ? (
+                  <div
+                    style={{
+                      color: '#000000',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        h1: ({ children }) => (
+                          <h1 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+                            {children}
+                          </h1>
+                        ),
+                        h2: ({ children }) => (
+                          <h2 style={{ fontSize: 16, fontWeight: 600, marginTop: 12, marginBottom: 6 }}>
+                            {children}
+                          </h2>
+                        ),
+                        h3: ({ children }) => (
+                          <h3 style={{ fontSize: 14, fontWeight: 600, marginTop: 10, marginBottom: 4 }}>
+                            {children}
+                          </h3>
+                        ),
+                        p: ({ children }) => (
+                          <p style={{ marginBottom: 8 }}>
+                            {children}
+                          </p>
+                        ),
+                        strong: ({ children }) => (
+                          <strong style={{ fontWeight: 600 }}>
+                            {children}
+                          </strong>
+                        ),
+                        ul: ({ children }) => (
+                          <ul style={{ paddingLeft: 20, marginBottom: 8 }}>
+                            {children}
+                          </ul>
+                        ),
+                        ol: ({ children }) => (
+                          <ol style={{ paddingLeft: 20, marginBottom: 8 }}>
+                            {children}
+                          </ol>
+                        ),
+                        li: ({ children }) => (
+                          <li style={{ marginBottom: 4 }}>
+                            {children}
+                          </li>
+                        ),
+                      }}
+                    >
+                      {msg.text}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      color: '#FFFFFF',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {msg.text}
+                  </div>
+                )}
               </Card>
             </div>
 
@@ -346,11 +405,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
 
       {/* Input Area */}
       <div className="p-5 border-t border-gray-100 space-y-3">
-        <div className="flex justify-between">
+        <div className="flex justify-between gap-3">
           <Button
             size="small"
             onClick={handleClear}
             disabled={isProcessing}
+            style={{
+              minWidth: 110,
+              backgroundColor: '#F3F4F6',
+              borderColor: '#D4AF37',
+              color: '#374151',
+              fontWeight: 500,
+            }}
           >
             清空
           </Button>
@@ -359,6 +425,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
             type={pendingProposal ? "primary" : "default"}
             onClick={handleApply}
             disabled={isProcessing || !pendingProposal}
+            style={{
+              minWidth: 110,
+              backgroundColor: pendingProposal ? '#334155' : '#F3F4F6',
+              borderColor: '#D4AF37',
+              color: pendingProposal ? '#FFFFFF' : '#334155',
+              fontWeight: 600,
+            }}
           >
             应用{pendingProposal ? ' ✓' : ''}
           </Button>
