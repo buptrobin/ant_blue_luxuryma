@@ -11,7 +11,7 @@ import { Input, Button, Avatar, Card, Space, Typography, Alert } from 'antd';
 import { ChatMessage, ThinkingStep, ThinkingStepStatus } from '../types';
 import ThinkingProcess from './ThinkingProcess';
 import { INITIAL_PROMPT } from '../constants';
-import { analyzeMarketingGoalStream, healthCheck } from '../services/api';
+import { analyzeMarketingGoalStream, healthCheck, resetSession, createSession } from '../services/api';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
@@ -28,6 +28,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
   const [isThinkingExpanded, setIsThinkingExpanded] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
   const [isApiReady, setIsApiReady] = useState(true);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
@@ -47,6 +48,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
       setIsApiReady(ready);
       if (!ready) {
         setApiError('后端API不可用，请启动后端服务（python main.py）');
+      } else {
+        // Create a new session when component mounts
+        try {
+          const sessionResponse = await createSession();
+          setSessionId(sessionResponse.session_id);
+          console.log('Created new session:', sessionResponse.session_id);
+        } catch (error) {
+          console.error('Failed to create session:', error);
+        }
       }
     };
 
@@ -147,7 +157,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
             };
             setMessages(prev => [...prev, summaryMsg]);
           });
-        }
+        },
+        // Pass session ID for multi-turn conversation
+        sessionId
       );
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -168,6 +180,28 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  const handleClear = async () => {
+    try {
+      // Reset session on backend
+      const sessionResponse = await resetSession(sessionId);
+
+      // Update session ID
+      setSessionId(sessionResponse.session_id);
+
+      // Clear messages and thinking steps
+      setMessages([]);
+      setThinkingSteps([]);
+
+      // Clear input
+      setInputValue('');
+
+      console.log('Session cleared, new session:', sessionResponse.session_id);
+    } catch (error) {
+      console.error('Failed to clear session:', error);
+      setApiError(`清空失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -260,7 +294,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ onAnalyzeStart, onAnalyze
         <div className="flex justify-between">
           <Button
             size="small"
-            onClick={() => setInputValue('')}
+            onClick={handleClear}
             disabled={isProcessing}
           >
             清空

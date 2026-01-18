@@ -52,6 +52,12 @@ export interface ThinkingStepEvent {
   status: string;
 }
 
+export interface SessionResponse {
+  session_id: string;
+  message: string;
+  created_at: string;
+}
+
 /**
  * Analyze marketing goal with streaming thinking steps
  */
@@ -61,11 +67,17 @@ export async function analyzeMarketingGoalStream(
   onAnalysisComplete: (result: AnalysisResult) => void,
   onError: (error: string) => void,
   onNodeComplete?: (node: string, timestamp: string) => void,
-  onNodeSummary?: (node: string, summary: string) => void
+  onNodeSummary?: (node: string, summary: string) => void,
+  sessionId?: string | null
 ): Promise<void> {
   try {
+    const params: Record<string, string> = { prompt };
+    if (sessionId) {
+      params.session_id = sessionId;
+    }
+
     const eventSource = new EventSource(
-      `${API_BASE}/api/v1/analysis/stream?${new URLSearchParams({ prompt }).toString()}`
+      `${API_BASE}/api/v1/analysis/stream?${new URLSearchParams(params).toString()}`
     );
 
     // 🔥 添加实时日志，确认事件是否到达
@@ -232,4 +244,39 @@ export async function healthCheck(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Reset/clear a session and create a new one
+ */
+export async function resetSession(sessionId?: string | null): Promise<SessionResponse> {
+  const params = new URLSearchParams();
+  if (sessionId) {
+    params.append('session_id', sessionId);
+  }
+
+  const response = await fetch(`${API_BASE}/api/v1/session/reset?${params.toString()}`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a new session explicitly
+ */
+export async function createSession(): Promise<SessionResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/session/create`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
 }

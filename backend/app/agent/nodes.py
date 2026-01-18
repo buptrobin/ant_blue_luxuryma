@@ -22,27 +22,53 @@ async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
 
     分析用户输入，识别业务目标、目标人群和约束条件。
     判断意图是否明确，如果不明确则标记为 "ambiguous"。
+    支持多轮对话，会考虑对话历史。
     """
     logger.info("Executing intent_recognition_node")
 
     user_input = state.get("user_input", "")
     messages = state.get("messages", [])
+    conversation_context = state.get("conversation_context", "")
 
     llm = get_llm_manager()
 
-    # 构建提示词
-    prompt = f"""你是一个营销专家，负责分析用户的圈人需求。
+    # 构建提示词 - 如果有对话上下文，则包含它
+    context_section = ""
+    if conversation_context and conversation_context != f"用户需求：{user_input}":
+        # 有对话历史 - 多轮对话模式
+        context_section = f"""
+{conversation_context}
 
+**多轮对话模式**：
+你需要仔细阅读上面的对话历史和累积的营销策略信息，然后分析新的用户输入。
+
+关键要求：
+1. **融合所有信息**：将对话历史中的所有约束条件、目标人群、业务目标与新输入融合在一起
+2. **累积约束条件**：新的约束条件要追加到之前的约束条件列表中（除非明确说"去掉"某个条件）
+3. **保留历史信息**：如果新输入没有提到某个维度（如年龄、性别），保留之前的设置
+4. **覆盖冲突信息**：如果新输入与历史冲突（如之前说"VIP"，现在说"只要VVIP"），以新输入为准
+
+"""
+    else:
+        # 首次对话
+        context_section = f"""
 用户输入：{user_input}
 
-请分析用户的意图，并返回JSON格式的结果，包含以下字段：
+"""
+
+    prompt = f"""{context_section}你是一个营销专家，负责分析用户的圈人需求。
+
+请分析{"用户的完整需求（融合所有对话历史）" if conversation_context and conversation_context != f"用户需求：{user_input}" else "用户的意图"}，并返回JSON格式的结果，包含以下字段：
+
 - business_goal: 业务目标（如 "提升转化率", "扩大客户群", "促进复购"等）
 - target_audience: 目标人群描述（包含会员等级、年龄、性别、消费力等维度）
-- constraints: 约束条件列表（如 "排除近期已购买用户", "预算限制"等）
+- constraints: **所有的**约束条件列表（如 "排除近期已购买用户", "只要女性客户"等）- 包括历史的和新增的
 - kpi: 核心KPI（conversion_rate/revenue/visit_rate/engagement）
 - size_preference: 人群规模偏好 {{"min": 最小人数, "max": 最大人数}}
 - is_clear: 意图是否明确（true/false）。如果用户描述模糊、缺少关键信息，则为false
-- summary: 用1-2句话总结你对用户意图的理解，例如："您希望提升整体购买转化率，当前没有特定的人群限制条件。"
+- summary: 用1-2句话总结你对用户**完整需求**的理解（融合所有历史信息后的理解）
+
+**重要**：如果这是多轮对话，constraints字段必须包含所有历史约束条件和新增的约束条件。
 
 只返回JSON，不要其他内容。
 
@@ -50,15 +76,16 @@ async def intent_recognition_node(state: AgentState) -> dict[str, Any]:
 {{
   "business_goal": "提升春季新品转化率",
   "target_audience": {{
-    "tier": ["VVIP", "VIP"],
+    "tier": ["VVIP"],
     "age_group": "25-44",
+    "gender": "female",
     "has_recent_purchase": false
   }},
-  "constraints": ["排除近7天已购买用户", "预算50万"],
+  "constraints": ["排除近7天已购买用户", "只要女性客户", "只要VVIP等级"],
   "kpi": "conversion_rate",
   "size_preference": {{"min": 100, "max": 500}},
   "is_clear": true,
-  "summary": "您希望针对春季新品手袋上市，圈选25-44岁的VVIP和VIP客户，以提升产品转化率。"
+  "summary": "您希望针对春季新品手袋上市，圈选25-44岁的女性VVIP客户（排除近期已购买用户），以提升产品转化率。"
 }}
 """
 

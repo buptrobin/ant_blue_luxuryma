@@ -97,12 +97,17 @@ class Session:
         summary_parts = []
 
         for i, turn in enumerate(recent_turns, 1):
+            constraints_str = ", ".join(turn.intent.get('constraints', [])) if turn.intent.get('constraints') else "无"
+            target_audience = turn.intent.get('target_audience', {})
+
             summary_parts.append(
                 f"第{i}轮:\n"
-                f"  用户需求: {turn.user_input}\n"
+                f"  用户输入: {turn.user_input}\n"
+                f"  业务目标: {turn.intent.get('business_goal', 'N/A')}\n"
                 f"  KPI目标: {turn.intent.get('kpi', 'N/A')}\n"
-                f"  目标等级: {', '.join(turn.intent.get('target_tiers', []))}\n"
-                f"  圈选人数: {len(turn.audience)}\n"
+                f"  目标人群: {target_audience}\n"
+                f"  约束条件: {constraints_str}\n"
+                f"  圈选人数: {len(turn.audience)}人\n"
             )
 
         return "\n".join(summary_parts)
@@ -181,16 +186,26 @@ class MemoryManager:
         latest_turn = session.turns[-1]
         latest_intent = latest_turn.intent
 
+        # 收集所有历史的约束条件
+        all_constraints = []
+        for turn in session.turns:
+            constraints = turn.intent.get("constraints", [])
+            all_constraints.extend(constraints)
+
+        # 去重
+        all_constraints = list(dict.fromkeys(all_constraints))
+
         context = f"""## 对话历史
 
 {history}
 
-## 当前营销策略状态
+## 累积的营销策略信息
 
-当前KPI目标: {latest_intent.get('kpi', 'N/A')}
-当前目标等级: {', '.join(latest_intent.get('target_tiers', []))}
-当前人群规模: {len(latest_turn.audience)}人
-当前行为筛选: {latest_intent.get('behavior_filters', {})}
+基于以上对话历史，当前累积的营销策略包括：
+- 业务目标: {latest_intent.get('business_goal', 'N/A')}
+- KPI目标: {latest_intent.get('kpi', 'N/A')}
+- 目标人群: {latest_intent.get('target_audience', {})}
+- 所有约束条件: {', '.join(all_constraints) if all_constraints else '无'}
 
 ## 新的用户输入
 
@@ -198,11 +213,16 @@ class MemoryManager:
 
 ---
 
-请分析用户的新输入，判断是：
-1. **修改意图**：用户想调整现有策略（如"去掉年龄限制"、"只要VVIP"、"扩大到200人"）
-2. **全新需求**：用户提出了完全新的营销目标
+**重要说明**：
+这是一个多轮对话。新的用户输入可能是：
+1. **补充信息**：在现有需求基础上增加新的约束或条件（如"不要最近购买过的"、"只要女性客户"）
+2. **修改需求**：调整之前的某些条件（如"去掉年龄限制"、"改成500人"、"换成VVIP"）
+3. **全新需求**：提出完全不同的营销目标
 
-如果是修改意图，请基于当前状态进行增量调整。如果是全新需求，请重新分析。
+请仔细分析新输入，**融合所有历史信息**：
+- 如果是补充或修改，请在现有信息基础上累积新的约束条件
+- 保留之前明确提到的所有有效约束和目标
+- 合并所有轮次的需求，形成完整的意图理解
 """
         return context
 

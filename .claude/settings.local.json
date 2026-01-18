@@ -10,7 +10,8 @@
       "Bash(tree:*)",
       "Bash(ls:*)",
       "Bash(curl:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(xargs cat:*)"
     ]
   }
 }
